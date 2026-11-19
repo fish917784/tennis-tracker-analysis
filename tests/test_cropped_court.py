@@ -20,8 +20,12 @@ court = importlib.import_module('cropped_court_test_core.court_tracking')
 def render_court(near_y, *, offset=0, omit=None):
     corners = np.float32([[295, 290], [555, 293], [1040, near_y + 4], [-215, near_y]])
     corners[:, 0] += offset
+    return render_markings(corners, (464, 848), omit=omit)
+
+
+def render_markings(corners, shape, *, omit=None):
     matrix = cv2.getPerspectiveTransform(court.COURT_CORNERS, corners)
-    frame = np.full((464, 848, 3), (65, 76, 46), np.uint8)
+    frame = np.full((*shape, 3), (65, 76, 46), np.uint8)
     cv2.fillConvexPoly(frame, np.rint(corners).astype(np.int32), (132, 88, 55))
     projected = cv2.perspectiveTransform(court.COURT_SEGMENTS, matrix)
     for index, (start, end) in enumerate(np.rint(projected).astype(int)):
@@ -77,6 +81,16 @@ class CroppedCourtTests(unittest.TestCase):
                                                       established=True, partial=True))
         self.assertIsNone(tracker.update(blank, 7))
         self.assertGreater(tracker.cuts, 0)
+
+    def test_oblique_near_baseline_and_nearly_vertical_sideline(self):
+        corners = np.float32([[403, 116], [606, 128], [722, 396], [74, 244]])
+        frame, expected = render_markings(corners, (342, 608))
+        tracker = court.CourtTracker(30.)
+        self.assertIsNone(tracker.update(frame, 0))
+        result = tracker.update(frame, 6)
+        self.assertIsNotNone(result)
+        self.assertTrue(result.partial)
+        self.assert_visible_markings_match(result, expected, frame.shape)
 
 
 if __name__ == '__main__':

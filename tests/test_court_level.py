@@ -46,6 +46,15 @@ class CourtLevelTests(unittest.TestCase):
             self.assertIsNotNone(self.confirm(20))
         self.assertEqual(len(self.tracker._recent), 1)
 
+    def test_acquisition_scans_each_width_once_per_source_frame(self):
+        frame = np.zeros((432, 768, 3), np.uint8)
+        with patch.object(court, '_detect_at_width', return_value=None) as detector, \
+             patch.object(self.tracker, '_confirm_cropped_court', return_value=None):
+            self.tracker.update(frame, frame_idx=0)
+            self.tracker.update(frame, frame_idx=72)
+        self.assertEqual([call.args[1] for call in detector.call_args_list],
+                         [768, 512, 320, 768, 512, 320])
+
     def test_single_scale_requires_three_currently_verified_frames(self):
         with patch.object(court, '_detect_at_width', side_effect=lambda image, size: detection() if size == 320 else None):
             self.assertIsNone(self.confirm(10))

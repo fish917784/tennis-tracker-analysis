@@ -108,7 +108,7 @@ def refine_partial_court(matrix, distance, *, established=False):
     return candidates[best], float(scores[best]), float(close[best])
 
 
-def _plausible(matrices, shape, *, cropped_baseline=False):
+def _plausible(matrices, shape, *, cropped_baseline=False, oblique=False):
     height, width = shape
     points = matrices @ np.column_stack((COURT_CORNERS, np.ones(4))).T
     depth = points[:, 2]
@@ -121,15 +121,20 @@ def _plausible(matrices, shape, *, cropped_baseline=False):
     near_rise = np.abs(xy[:, 1, 2] - xy[:, 1, 3])
     near_bottom = ((near_y >= height * .975) & (near_y <= height * 1.22) if cropped_baseline
                    else (near_y >= height * .53) & (near_y <= height * 1.08))
+    far_slope, near_slope = (.28, .28) if oblique else (.13, .14)
     low_and_cropped = (
         (far >= width * .13) & (far <= near * .60)
         & (near >= width * .62) & (near <= width * 2.6)
-        & (far_rise <= .13 * far) & (near_rise <= .14 * near)
+        & (far_rise <= far_slope * far) & (near_rise <= near_slope * near)
         & near_bottom
         & (near_y - xy[:, 1, :2].mean(axis=1) >= height * .16)
     )
     if cropped_baseline:
         low_and_cropped &= xy[:, 1, 2:].min(axis=1) >= .90 * height
+    if oblique:
+        side_depth = xy[:, 1, [3, 2]] - xy[:, 1, :2]
+        tilted = (far_rise > .13 * far) | (near_rise > .14 * near)
+        low_and_cropped &= tilted & (side_depth >= .10 * height).all(axis=1)
     bounded = ((xy[:, 0] >= -.85 * width) & (xy[:, 0] <= 1.85 * width)).all(axis=1)
     return ((depth > 0).all(axis=1) | (depth < 0).all(axis=1)) & bounded & low_and_cropped
 
@@ -150,8 +155,8 @@ _SERVICE_SEEDS = np.concatenate((_seed_transforms(0, 2), _seed_transforms(1, 2))
 _SQUARE = np.float32([[0, 0], [1, 0], [1, 1], [0, 1]])
 
 
-def _ground_lines(distance, rows_mask):
-    """Find long rays and cross-court lines without classifying shallow rays as horizontal."""
+def _ground_segments(distance, rows_mask):
+    """Find line segments once for both low-view searches."""
     height, width = distance.shape
     mask = (distance == 0).astype(np.uint8) * 255
     mask[:round(.43 * height)] = 0
@@ -161,25 +166,35 @@ def _ground_lines(distance, rows_mask):
     weak_rows = cv2.HoughLinesP(rows_mask, 1, np.pi / 540, max(13, round(width * .028)),
                                minLineLength=max(18, round(width * .039)),
                                maxLineGap=max(5, round(width * .024)))
+    return lines, weak_rows
+
+
+def _ground_lines(lines, weak_rows, shape, *, oblique=False):
+    """Classify transverse markings and the two sides of the court."""
+    height, width = shape
     groups = ([], [], [])
     if lines is None:
         return groups
     segments = lines.reshape(-1, 2, 2).astype(np.float32)
+    row_slope = .28 if oblique else .13
+    side_min_slope = .28 if oblique else .16
     if weak_rows is not None:
         weak = weak_rows.reshape(-1, 2, 2)
         delta = weak[:, 1] - weak[:, 0]
-        weak = weak[np.abs(delta[:, 1]) <= .13 * np.abs(delta[:, 0])]
+        weak = weak[np.abs(delta[:, 1]) <= row_slope * np.abs(delta[:, 0])]
         segments = np.concatenate((segments, weak))
     lengths = np.linalg.norm(np.diff(segments, axis=1)[:, 0], axis=1)
     for i in np.argsort(-lengths)[:250]:
         start, end = segments[i]
         start, end = (start, end) if start[0] <= end[0] else (end, start)
         dx, dy = end - start
+        row = abs(dy) <= row_slope * dx
+        side = abs(dy) > side_min_slope * dx and (oblique or abs(dy) <= 2.5 * dx)
         normal = np.array([-dy, dx], dtype=np.float64) / lengths[i]
         midpoint = (start + end) * .5
-        if abs(dy) <= .13 * dx and midpoint[1] >= height * .51:
+        if row and midpoint[1] >= height * .51:
             group = groups[0]
-        elif .16 * dx < abs(dy) <= 2.5 * dx and midpoint[1] >= height * .54:
+        elif side and midpoint[1] >= height * .54:
             group = groups[1 if dy < 0 else 2]
         else:
             continue
@@ -282,21 +297,30 @@ def detect_partial_court(gray, distance):
     ridges = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel)
     rows_mask = cv2.inRange(ridges, 8, 255)
     rows_mask[:round(.50 * height)] = 0
-    rows, left, right = _ground_lines(distance, rows_mask)
-    fit = _fit_marking_candidates(rows, left, right, distance, rows_mask)
-    if fit is not None:
-        return fit
-    return _fit_marking_candidates(rows, left, right, distance, rows_mask, cropped_baseline=True)
+    segments, weak_rows = _ground_segments(distance, rows_mask)
+    # Keep the usual near-level search first. A side view may have a much
+    # steeper baseline and an almost vertical visible sideline.
+    for oblique in (False, True):
+        rows, left, right = _ground_lines(segments, weak_rows, distance.shape, oblique=oblique)
+        for cropped in (False, True):
+            fit = _fit_marking_candidates(
+                rows, left, right, distance, rows_mask, cropped_baseline=cropped, oblique=oblique,
+            )
+            if fit is not None:
+                return fit
+    return None
 
 
-def _fit_marking_candidates(rows, left, right, distance, rows_mask, *, cropped_baseline=False):
+def _fit_marking_candidates(rows, left, right, distance, rows_mask, *, cropped_baseline=False, oblique=False):
     quads = _section_quads(rows, left, right, distance.shape, cropped_baseline=cropped_baseline)
     if not len(quads):
         return None
     bases = np.asarray([cv2.getPerspectiveTransform(_SQUARE, quad) for quad in quads])
     seeds = _SERVICE_SEEDS if cropped_baseline else _BASELINE_SEEDS
     candidates = (bases[:, None] @ seeds).reshape(-1, 3, 3)
-    candidates = candidates[_plausible(candidates, distance.shape, cropped_baseline=cropped_baseline)]
+    candidates = candidates[_plausible(
+        candidates, distance.shape, cropped_baseline=cropped_baseline, oblique=oblique,
+    )]
     if not len(candidates):
         return None
     ranks = []

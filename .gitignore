@@ -46,7 +46,13 @@ Thumbs.db
 *.[jJ][pP][eE][gG]
 *.[pP][nN][gG]
 !/docs/images/court-detection.jpg
+!/docs/images/court-oblique.jpg
+!/docs/images/effb0-heatmaps.png
+!/docs/images/rtx3070-fps.png
+!/docs/images/bounce-sequence.png
 !/docs/images/desktop-analysis.png
+!/docs/images/desktop-tracknetv2.png
+!/docs/images/desktop-tracknetv5.png
 !/docs/images/web-analysis.png
 !/docs/images/web-bounces.png
 *.npy

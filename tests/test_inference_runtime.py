@@ -3,7 +3,7 @@ import importlib.util
 import os
 from pathlib import Path
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import warnings
 
 import numpy as np
@@ -135,6 +135,35 @@ class InferenceRuntimeTests(unittest.TestCase):
                 return value[:, :1]
         with self.assertRaisesRegex(ValueError, "shape"):
             runtime.predict_heatmaps(BadShape(), [frame(30)], "cpu")
+
+    def test_effb0_cuda_graph_is_optional_on_cpu_or_explicit_fp32(self):
+        model = FrameRedChannel()
+        with patch.object(torch.cuda, "CUDAGraph") as capture:
+            self.assertIsNone(runtime.EffB0CudaTriplet.create(model, "cpu"))
+            with patch.dict(os.environ, {"TENNIS_PRECISION": "fp32"}):
+                self.assertIsNone(runtime.EffB0CudaTriplet.create(model, "cuda"))
+        capture.assert_not_called()
+
+    def test_nonfinite_effb0_graph_releases_resources_and_retries_standard_inference(self):
+        accelerator = object.__new__(runtime.EffB0CudaTriplet)
+        accelerator._model = FrameRedChannel()
+        accelerator._device = torch.device("cpu")
+        accelerator._interpolation = runtime.cv2.INTER_AREA
+        accelerator._lock = runtime.Lock()
+        executor = accelerator._executor = Mock()
+        frames = [frame(30), frame(60), frame(90)]
+
+        with patch.object(runtime, "_amp_enabled", return_value=True), \
+             patch.object(accelerator, "_predict_triplet", return_value=np.full((3, 1, 1), np.nan)) as graph, \
+             self.assertWarnsRegex(RuntimeWarning, "FP32"):
+            output = accelerator.predict(frames)
+            second_output = accelerator.predict(frames)
+
+        graph.assert_called_once_with(frames)
+        executor.shutdown.assert_called_once_with(wait=True)
+        self.assertIsNone(accelerator._executor)
+        np.testing.assert_allclose(output[:, 0, 0], np.array([30, 60, 90]) / 255)
+        np.testing.assert_array_equal(second_output, output)
 
 
 if __name__ == "__main__":

@@ -270,24 +270,28 @@ def _detect_at_width(frame: np.ndarray, width: int) -> Optional[CourtDetection]:
     return CourtDetection(image_to_court, court_to_image, quad, best[1], best[2])
 
 
-def detect_court(frame: np.ndarray, *, max_width: int = 960) -> Optional[CourtDetection]:
-    """Return a verified court in original image pixels, or None for insufficient evidence."""
+def _detect_with_width_fallback(frame, max_width, detect_at_width):
     original_height, original_width = frame.shape[:2]
     if min(original_height, original_width) < 32 or max_width < 320:
         raise ValueError("A valid frame and max_width of at least 320 are required.")
     width = min(original_width, max_width)
-    result = _detect_at_width(frame, width)
+    result = detect_at_width(width)
     if width < 640 or (result is not None and result.score >= 0.92 and result.validation_score >= 0.88):
         return result
 
     # Downsampling can suppress fine fence or compression detail enough for
     # Hough voting to recover markings that had weaker support at full size.
-    alternate = _detect_at_width(frame, round(width * 2 / 3))
+    alternate = detect_at_width(round(width * 2 / 3))
     if result is None:
         return alternate
     if alternate is not None and alternate.score + alternate.validation_score > result.score + result.validation_score:
         return alternate
     return result
+
+
+def detect_court(frame: np.ndarray, *, max_width: int = 960) -> Optional[CourtDetection]:
+    """Return a verified court in original image pixels, or None for insufficient evidence."""
+    return _detect_with_width_fallback(frame, max_width, lambda width: _detect_at_width(frame, width))
 
 
 def _paint_overlay(canvas: np.ndarray, detection: CourtDetection) -> None:

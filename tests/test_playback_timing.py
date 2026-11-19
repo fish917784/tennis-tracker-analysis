@@ -1,7 +1,9 @@
 """Verify source-frame playback timing independently of analysis throughput."""
 from collections import deque
 from pathlib import Path
+from queue import SimpleQueue
 import sys
+from threading import Event
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -57,6 +59,62 @@ class PlaybackScheduleTests(unittest.TestCase):
         for count in (0, -1, 1.5):
             with self.subTest(count=count), self.assertRaises(ValueError):
                 desktop.preview_schedule(25.0, count, ready_at=0.0)
+
+
+class FilePreviewIntegrationTests(unittest.TestCase):
+    def test_file_preview_waits_through_model_loading_and_allows_a_storage_error(self):
+        app = desktop.TennisTrackerLiveApp.__new__(desktop.TennisTrackerLiveApp)
+        run = SimpleNamespace(source_fps=59.94, analyzed_through=0, draw_frame=Mock(), is_alive=lambda: True)
+        playback = Mock()
+        self.assertIsNone(app._read_preview(run, playback, 10.))
+        playback.take.assert_not_called()
+        run.analyzed_through = 3
+        frame = np.zeros((2, 2, 3), dtype=np.uint8)
+        playback.take.return_value = (3, frame, None)
+        index, model, displayed, point, latency = app._read_preview(run, playback, 11.)
+        self.assertEqual((index, model, point, latency), (3, None, None, None))
+        playback.take.assert_called_once_with(11., 59.94, 3, analysis_finished=False)
+        self.assertIs(displayed, frame)
+        run.draw_frame.assert_not_called()
+
+    def test_file_preview_draws_only_metadata_for_its_source_index(self):
+        app = desktop.TennisTrackerLiveApp.__new__(desktop.TennisTrackerLiveApp)
+        overlay = SimpleNamespace(point=(3, 7))
+        run = SimpleNamespace(source_fps=25., analyzed_through=500, is_alive=lambda: True,
+                              draw_frame=Mock(return_value="drawn"))
+        playback = Mock()
+        playback.take.return_value = (12, "decoded frame", ("EffB0", overlay, 8.0))
+        self.assertEqual(app._read_preview(run, playback, 21.), (12, "EffB0", "drawn", (3, 7), 8.0))
+        run.draw_frame.assert_called_once_with("decoded frame", overlay, 12, 25.)
+
+    def test_background_eof_keeps_playback_and_its_final_fps_visible(self):
+        app = desktop.TennisTrackerLiveApp.__new__(desktop.TennisTrackerLiveApp)
+        playback = SimpleNamespace(take=Mock(return_value=None), finished=False,
+                                   next_at=None, error=None, close=Mock())
+        run = SimpleNamespace(file_playback=playback, source_fps=25., input_fps=25.,
+                              analyzed_through=500, analysis_fps=92., stop=Event(),
+                              is_alive=lambda: False, last_error=None, events=SimpleQueue())
+        app.run = run
+        app.next_fps_update = None
+        app.preview_times = deque()
+        app.last_preview_fps = 24.9
+        app.playback_finished = False
+        app.closing = False
+        app.root = Mock()
+        app.preview_fps = Mock()
+        app.set_running = Mock()
+        app.status = Mock()
+
+        app.poll()
+        self.assertIs(app.run, run)
+        self.assertIn("分析: 92.0", app.preview_fps.set.call_args.args[0])
+        playback.close.assert_not_called()
+
+        playback.finished = True
+        app.poll()
+        self.assertIsNone(app.run)
+        playback.close.assert_called_once_with()
+        self.assertIn("分析: 92.0", app.preview_fps.set.call_args.args[0])
 
 
 class AnalysisThroughputTests(unittest.TestCase):

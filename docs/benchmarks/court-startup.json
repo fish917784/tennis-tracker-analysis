@@ -1,0 +1,53 @@
+{
+  "gpu": "NVIDIA GeForce RTX 3070",
+  "mode": "unlimited desktop analysis worker; live court detection; no verified-cache data",
+  "frame_numbers": "one-based relative to each sampled window",
+  "startup_timing": "wall-clock from analysis start including model loading; one run per variant",
+  "samples": [
+    {
+      "clip": "Alcaraz／Ruud 低視角片段",
+      "source_fps": 59.94005994005994,
+      "first_source_index_zero_based": 540,
+      "total_source_frames": 210,
+      "first_locked_frame_before": 64,
+      "first_locked_frame_after": 13,
+      "seconds_to_first_lock_before": 5.68542290001642,
+      "seconds_to_first_lock_after": 3.942958200001158
+    },
+    {
+      "clip": "室外低視角 9.MOV",
+      "source_fps": 30.0,
+      "first_source_index_zero_based": 0,
+      "total_source_frames": 180,
+      "first_locked_frame_before": 22,
+      "first_locked_frame_after": 10,
+      "seconds_to_first_lock_before": 1.626459899940528,
+      "seconds_to_first_lock_after": 1.0348365999525413
+    }
+  ],
+  "practice_opening_cut_check": {
+    "frames": 800,
+    "transitions": [
+      {
+        "frame": 207,
+        "locked": true
+      },
+      {
+        "frame": 272,
+        "locked": false
+      },
+      {
+        "frame": 310,
+        "locked": true
+      },
+      {
+        "frame": 526,
+        "locked": false
+      },
+      {
+        "frame": 565,
+        "locked": true
+      }
+    ]
+  }
+}

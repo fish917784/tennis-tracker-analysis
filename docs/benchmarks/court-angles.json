@@ -1,0 +1,81 @@
+{
+  "method": "live automatic court tracking on sampled video windows",
+  "samples": [
+    {
+      "case": "oblique-early",
+      "source_start_index_zero_based": 0,
+      "source_frames": 90,
+      "locked_frames_before": 0,
+      "locked_frames_after": 84,
+      "first_lock_index_zero_based": 6
+    },
+    {
+      "case": "oblique-mid",
+      "source_start_index_zero_based": 242,
+      "source_frames": 90,
+      "locked_frames_before": 0,
+      "locked_frames_after": 84,
+      "first_lock_index_zero_based": 248
+    },
+    {
+      "case": "oblique-late",
+      "source_start_index_zero_based": 484,
+      "source_frames": 90,
+      "locked_frames_before": 0,
+      "locked_frames_after": 84,
+      "first_lock_index_zero_based": 490
+    },
+    {
+      "case": "outdoor-cropped",
+      "source_start_index_zero_based": 4014,
+      "source_frames": 90,
+      "locked_frames_before": 78,
+      "locked_frames_after": 78,
+      "first_lock_index_zero_based": 4026
+    },
+    {
+      "case": "indoor-low",
+      "source_start_index_zero_based": 0,
+      "source_frames": 90,
+      "locked_frames_before": 83,
+      "locked_frames_after": 83,
+      "first_lock_index_zero_based": 7
+    },
+    {
+      "case": "practice",
+      "source_start_index_zero_based": 540,
+      "source_frames": 90,
+      "locked_frames_before": 83,
+      "locked_frames_after": 83,
+      "first_lock_index_zero_based": 547
+    },
+    {
+      "case": "broadcast",
+      "source_start_index_zero_based": 410,
+      "source_frames": 90,
+      "locked_frames_before": 90,
+      "locked_frames_after": 90,
+      "first_lock_index_zero_based": 410
+    },
+    {
+      "case": "close-up",
+      "source_start_index_zero_based": 300,
+      "source_frames": 90,
+      "locked_frames_before": 0,
+      "locked_frames_after": 0,
+      "first_lock_index_zero_based": null
+    }
+  ],
+  "test7_integrations": {
+    "web": {
+      "sample_frames": 90,
+      "first_lock_zero_based": 6,
+      "locked_frames": 84
+    },
+    "desktop": {
+      "sample_frames": 180,
+      "first_lock_one_based": 13,
+      "displayed_court_frames": 168
+    }
+  }
+}

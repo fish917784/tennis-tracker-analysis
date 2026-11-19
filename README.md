@@ -1,100 +1,129 @@
 # Tennis Tracker
 
-網球影片的自動場地校正、球體追蹤與落點分析。提供 Windows 桌面版、在本機瀏覽器使用的 Web 版，以及只偵測球場的命令列工具。
+本專案從單一視角的網球影片估計**球場幾何、球體軌跡與候選落點**。桌面版支援影片與攝影機，Web 版可上傳影片並下載帶標記的結果。另提供獨立場地校正工具。
 
-[這版做了什麼](#這版做了什麼) · [RTX 3070 實測](#rtx-3070-實測比較) · [實際畫面](#實際畫面) · [安裝與啟動](#在-windows-安裝)
+[分析方法](#分析方法) · [RTX 3070 實測](#rtx-3070-實測比較) · [實際畫面](#實際畫面) · [安裝與啟動](#安裝與啟動)
 
-## 這版做了什麼
+## 分析方法
 
-- **讓低視角也能自動校正**。加入斜率較小的邊線和較淡的發球線候選。近端底線出畫時，改用左右邊線、近端發球線、遠端標線及中線驗證透視投影，從可見的場線推算畫面外的位置。
-- **減少場地框閃爍**。新構圖先經過跨影格確認，接著用當前場線與鏡頭位移更新位置。場線短暫被遮住時，介面可保留外框供重新確認，這段期間會暫停落點判定。切鏡時清除舊校正並重新定位。
-- **讓限速跟著影片 FPS**。桌面和 Web 預設不限速，可切換成來源 FPS。來源 FPS 與實測分析速度分開顯示，Web 匯出也保留來源 FPS。
-- **加入 EffB0 6 幀批次**。桌面使用 CUDA 全速分析影片時，可將兩組各 3 幀一起推論。介面可關閉此選項，回到每次 3 幀。
-- **用落點當下的場地判斷界內外**。Web 逐影格保存當時的校正矩陣，落點只使用同一視角下連續且有效的資料。地面投影估速也在介面標明。
-- **整理成可獨立安裝的專案**。桌面與 Web 共用場地程式，啟動檔支援專案內的 Python 虛擬環境。補上依賴、模型放置說明和回歸測試，模型權重及分析資料由本機提供。
+1. **場地校正**。從底線、邊線與發球區標線估計影像平面到球場平面的單應矩陣。低視角或斜拍時，程式也會搜尋傾斜的底線及近乎垂直的邊線，以畫面上仍可見的標線驗證投影。場線短暫受遮擋時可保留外框供確認，期間暫停落點判定。切鏡時重新校正。
+2. **追蹤與落點**。先從球位置熱力圖取得候選球位，再用軌跡連續性抑制跳點。具備有效場地校正時，可用 CatBoost 對連續球位的運動特徵評估候選落點，再依該影格的場地投影估計界內外。畫面中的速度是地面投影估速，會受球的離地高度影響。
+3. **預覽同步**。桌面背景分析預設全速。分析跟得上時，預覽按來源影片的時間播放。落後時，預覽等下一幀的分析完成，再顯示同一幀的畫面與標記。也可手動將分析限制在來源 FPS。Web 完成分析後可按來源 FPS 播放或下載匯出影片。
+
+### 預設球體模型 EffB0
+
+EffB0 是專案的預設球追蹤模型。它採用 EfficientNetV2-B0 作為特徵編碼器，並用多尺度池化（MSPE）及通道與空間注意力（CSCA）融合解碼特徵。模型將三個連續的 512 × 288 RGB 影格合併輸入，為每幀輸出一張球位置熱力圖。[模型程式](working/desktop/tracknet_v2_b0_mspe_csca.py) · [Tan 與 Le 的 EfficientNetV2 論文，ICML 2021](https://proceedings.mlr.press/v139/tan21a.html)
+
+![EffB0 實拍三幀輸入和各幀對應的球位置熱力圖](docs/images/effb0-heatmaps.png)
+
+上排為實際輸入的三個連續影格，下排為模型輸出的熱力圖。藍圈標出各張熱力圖的最高反應位置。
 
 ## RTX 3070 實測比較
 
-在 GeForce RTX 3070 8 GB 上，使用同一段 1280 × 720、59.94 FPS 的 Alcaraz 與 Ruud 練習影片做桌面不限速分析。每種配置跑兩輪，每輪先跑 60 幀再計時 540 幀，第二輪反向執行。表中為兩輪平均。
+三款模型在 GeForce RTX 3070 8 GB 上各跑一輪。使用同一段 Alcaraz 與 Ruud 練習影片，解析度 1280 × 720，來源 59.94 FPS。取樣範圍約 00:09 至 01:09，共 3,597 幀。測試固定每批 3 幀，開啟桌面預覽與即時場地校正，關閉分析限速。計時從模型載入完成後開始。
 
-| 模型 | 每批影格 | CUDA AMP | 權重大小 | 模型推論 FPS | 桌面分析 FPS |
-| --- | ---: | --- | ---: | ---: | ---: |
-| EfficientNetV2-B0 MSPE-CSCA（EffB0） | 3 | 開啟 | 26.86 MiB | 91.2 | **64.4** |
-| TrackNetV2 MSPE + CSCA | 3 | 開啟 | 44.29 MiB | 50.0 | **41.1** |
-| TrackNetV5 | 3 | 關閉 | 56.44 MiB | 93.7 | **69.5** |
-| EffB0（6 幀批次） | 6 | 開啟 | 26.86 MiB | 109.2 | **75.3** |
+![三款模型在 RTX 3070 上的桌面分析 FPS 與預覽 FPS，虛線為來源 59.94 FPS](docs/images/rtx3070-fps.png)
 
-桌面分析計時包含影片解碼、模型推論、場地與球追蹤以及標記繪製。模型推論欄計入影像前處理和熱圖回傳。三款同為 3 幀批次時，V5 比 EffB0 快約 8%。EffB0 開啟 6 幀批次後，桌面分析速度比自己的 3 幀模式快約 17%。
+| 模型 | 推論設定 | 分析 FPS | 預覽 FPS | 分析耗時（秒） | 有球位置的幀數 | 落點紀錄 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| EffB0 | FP16 AMP | **104.0** | 59.4 | 34.6 | 3,347 | 43 |
+| TrackNetV2 MSPE + CSCA | FP16 AMP | **42.2** | 42.1 | 85.3 | 2,982 | 40 |
+| TrackNetV5 SDK | FP32 | **68.2** | 58.6 | 52.8 | 3,086 | 42 |
 
-TrackNetV5 的數字取自本機版作為對照。GitHub 整理版的模型選項為 EffB0 和 TrackNetV2。
+分析 FPS 以完成分析的來源幀數計算，預覽 FPS 以視窗實際更新的新影格計算。EffB0 約 60 秒播完，背景分析提早結束。V2 跟隨分析進度，約 85.2 秒播完，顯示的 3,593 幀都有同幀分析結果。
+
+EffB0 和 V2 以目前的預覽同步模式實測，V5 採用本機完整版先前的原速播放數據。此發布包提供 EffB0 和 TrackNetV2。表中的球位與落點皆為程式輸出計數。[實測資料](docs/benchmarks/rtx3070-desktop.json)
+
+### 場地校正回歸
+
+桌面版在載入球模型前，用影片首幀啟動場地搜尋。相同影格與解析度的場線搜尋結果可重用，並沿用跨幀確認及切鏡重設。
+
+| 影片片段 | 調整前首次鎖定 | 調整後首次鎖定 |
+| --- | ---: | ---: |
+| Alcaraz／Ruud 低視角片段 | 第 64 幀 | 第 13 幀 |
+| 室外低視角 `9.MOV` | 第 22 幀 | 第 10 幀 |
+
+幀數從各片段的第一幀起算。練習影片開頭 800 幀另做切鏡測試，兩次切鏡都清除舊場地並重新鎖定。[場地鎖定實測](docs/benchmarks/court-startup.json)
 
 ## 實際畫面
 
-### 低視角場地校正
+### 低視角與斜拍校正
 
-左側是實拍原始影格，右側是同一影格的自動校正結果。下排的近端底線已移出畫面，程式仍能用可見場線推算球場位置。
+下圖左側為原始影格，右側為自動校正。下排近端底線已出畫，投影根據仍可見的場線求得。
 
-![低視角原始影片與自動校正對照，上排可見近端底線，下排近端底線出畫](docs/images/court-detection.jpg)
+![低視角影片的原始影格與自動校正對照](docs/images/court-detection.jpg)
 
-### 桌面即時分析
+斜拍影片 `test7.mp4` 的近底線斜向右下，一側單打線接近垂直。抽查三個各 90 幀的片段，三段有場地校正的幀數皆由 0 提升至 84，並各在第 7 幀鎖定。回歸樣本也涵蓋轉播視角、其他低視角與無可用標線的特寫。[視角回歸數據](docs/benchmarks/court-angles.json)
 
-用 EffB0 分析實拍影片。工具列可切換來源 FPS 限速，分析時會顯示實測 FPS、場地鎖定狀態和 2D 小球場。
+![斜拍室內場地的自動校正結果，投影線沿可見的底線、邊線及發球線](docs/images/court-oblique.jpg)
 
-![桌面版的 FPS 控制、場地框和 2D 小球場](docs/images/desktop-analysis.png)
+### 落點前後的球體運動
 
-### Web 分析與匯出
+`test4.mp4` 中一段包含 13 個連續影格的局部畫面。黃色 EVENT 標示系統提出的候選落點，可沿前後球位查看球的下降和反彈。
 
-上傳影片後，頁面顯示分析速度、場地校正資訊和帶標記的影片預覽，並可下載分析結果。
+![候選落點前後 13 幀的球體局部畫面，標出下降、觸地附近和反彈軌跡](docs/images/bounce-sequence.png)
 
-![Web 版完成實拍影片分析後的預覽、下載按鈕與場地校正資訊](docs/images/web-analysis.png)
+### 桌面與 Web 介面
 
-候選落點表會列出時間、球場座標與模型信心度，可跳回影片查看該段。
+桌面畫面同時顯示場地投影、球跡、2D 小球場與背景分析落點表。頂端會分開顯示來源、預覽及分析 FPS。
 
-![Web 的候選落點表，包含界內外判定、時間、座標與重播按鈕](docs/images/web-bounces.png)
+![EffB0 桌面實測畫面，包含場地投影、球跡、FPS 和落點紀錄](docs/images/desktop-analysis.png)
 
-## 在 Windows 安裝
+<details>
+<summary>查看 TrackNetV2 與 TrackNetV5 SDK 的桌面截圖</summary>
 
-使用 Python 3.12（含 Tkinter）。影片匯出建議將支援 H.264 的 FFmpeg 放入 `PATH`。
+![TrackNetV2 桌面實測畫面](docs/images/desktop-tracknetv2.png)
+
+![TrackNetV5 SDK 本機完整版實測畫面](docs/images/desktop-tracknetv5.png)
+
+</details>
+
+Web 版可預覽並下載帶標記的影片。候選落點表提供時間、球場座標和模型評分，可從表格跳回影片檢視。
+
+![Web 分析完成後的影片預覽、下載按鈕與場地資訊](docs/images/web-analysis.png)
+
+![Web 候選落點表，包含界內外估計、時間、座標與重播按鈕](docs/images/web-bounces.png)
+
+## 安裝與啟動
+
+建議在 Windows 使用含 Tkinter 的 Python 3.12。影片匯出建議將支援 H.264 的 FFmpeg 放入 `PATH`。
 
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-若要使用 NVIDIA GPU，先依 [PyTorch 安裝選擇器](https://pytorch.org/get-started/locally/) 在同一虛擬環境安裝適合的 `torch` 和 `torchvision`，再執行上方的 requirements 安裝。
+使用 NVIDIA GPU 時，可先為同一虛擬環境選擇適合的 `torch`、`torchvision`，再安裝上方其餘依賴。[PyTorch 安裝選擇器](https://pytorch.org/get-started/locally/)
 
-## 放置模型並啟動
-
-桌面版提供 EffB0 與 TrackNetV2，預設使用 EffB0。Web 版使用 EffB0。完整分析會讀取本機可使用的模型權重，檔名和放置位置見[球追蹤模型](working/desktop/model/README.md)與[落點模型](working/models/README.md)。CatBoost 模型用於落點偵測，可選用。
+桌面版預設使用 EffB0，也可切換 TrackNetV2。Web 版使用 EffB0。球追蹤權重由本機提供，CatBoost 落點權重可選用。[球追蹤權重](working/desktop/model/README.md) · [落點權重](working/models/README.md)
 
 | 啟動方式 | 用途 |
 | --- | --- |
-| `START_DESKTOP.cmd` | 開啟桌面版，選擇影片或相機 |
-| `START_WEB.cmd` | 開啟 Web 服務，在瀏覽器前往 `http://127.0.0.1:8018` |
+| `START_DESKTOP.cmd` | 開啟桌面版，選擇影片或攝影機 |
+| `START_WEB.cmd` | 啟動 Web 服務並在瀏覽器開啟 `http://127.0.0.1:8018` |
 
-啟動檔會使用專案的 `.venv`。也可用 `TENNIS_PYTHON` 指定另一支 Python 執行檔。Web 服務可用 `python start_web.py --port 8018` 指定埠號，分析輸出存於 `working/web/outputs/`。
+啟動檔使用專案的 `.venv`。Web 可透過 `python start_web.py --port 8018` 指定埠號，分析結果存於 `working/web/outputs/`。
 
-已有其他位置的元件時，可用環境變數指向本機路徑。
-
-| 變數 | 指向 |
+| 環境變數 | 用途 |
 | --- | --- |
-| `TENNIS_WEIGHTS_DIR` | 球追蹤權重資料夾 |
-| `TENNIS_BOUNCE_MODEL` | CatBoost 的 `.cbm` 模型檔 |
+| `TENNIS_PYTHON` | 指定 Python 執行檔 |
+| `TENNIS_WEIGHTS_DIR` | 指定球追蹤權重資料夾 |
+| `TENNIS_BOUNCE_MODEL` | 指定 CatBoost 的 `.cbm` 模型檔 |
 
-## 只跑球場偵測
+### 單獨執行場地校正
 
-只需要安裝 `requirements-court.txt`。下列命令使用影像中的場線，無需模型權重。影片匯出需要 FFmpeg。
+場地工具直接從影像標線估計幾何，安裝 `requirements-court.txt` 後即可使用。影片匯出需要 FFmpeg。
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-court.txt
 .\.venv\Scripts\python.exe working/court/track_video.py ./match.mp4 --output ./court_output
 ```
 
-單張影像、校正矩陣與輸出格式見[球場工具說明](working/court/README.md)。大斜角、多座球場同框或地面標線太少時，程式可能無法確認場地。畫面外線條由可見標線推算。落點與地面投影速度是影片分析估計值。
+校正可靠度取決於仍可辨認的標線。大斜角、嚴重遮擋或多座球場同框的畫面仍可能無法確認場地。球場尺寸依循 ITF 規格，場線配對參考 Dirk Farin 等人的方法。[場地工具與參考資料](working/court/README.md)
 
-## 測試
+## 重現與驗證
 
-已通過 116 項 Python 測試和 7 項前端檢查。室外低視角影片抽查 10 個時段，包含近端底線完全出畫的區段，各段都成功校正。桌面與 Web 也用實際模型完成了 60 幀的端到端分析測試。
+發布包已通過 131 項 Python 測試及 7 項前端檢查。EffB0 和 TrackNetV2 均以實際權重測試 CUDA 推論。另抽查同段影片的 72 幀，EffB0 以 CUDA Graph 和標準 AMP 推論所得的熱力圖逐值一致。
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
@@ -102,13 +131,11 @@ py -3.12 -m venv .venv
 node tests/test_frontend.js
 ```
 
-一般測試使用合成影格和測試資料。安裝 EffB0 權重後，可另用 `python tests/smoke_models.py --model EfficientNetV2-B0` 驗證實際模型推論。Node.js 只用於前端測試。
+回歸測試使用合成影格與測試資料。放置模型權重後，可另執行 `python tests/smoke_models.py --model EfficientNetV2-B0` 驗證實際模型推論。
 
-## 專案結構
-
-- `working/court/` 共用的場線擷取、透視校正與跨影格追蹤
-- `working/desktop/` 桌面介面、球體模型定義與推論
-- `working/web/` Web 上傳、分析、落點與影片輸出
-- `tests/` 球場、追蹤、影片輸出及介面測試
-
-球場尺寸依循 ITF 規格。場線模型配對參考 Dirk Farin 等人的方法，來源見[球場工具說明](working/court/README.md)。
+| 路徑 | 內容 |
+| --- | --- |
+| `working/court/` | 場線擷取、透視校正與跨幀追蹤 |
+| `working/desktop/` | 桌面介面、球追蹤模型與推論 |
+| `working/web/` | Web 服務、落點分析與匯出 |
+| `tests/` | 場地、推論、播放與輸出的回歸測試 |

@@ -3,6 +3,7 @@
 CUDA AMP changes numerical precision. Callers can select the FP32 baseline with
 TENNIS_PRECISION=fp32 or use_amp=False; output heatmaps always use float32.
 """
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 import os
 from threading import Lock
@@ -72,6 +73,12 @@ def _forward_heatmaps(model, tensor: torch.Tensor, device: torch.device, amp: bo
     return output.float().cpu().numpy()
 
 
+def _upload_pixels(pixels, device):
+    tensor = torch.from_numpy(pixels).permute(0, 3, 1, 2)
+    tensor = tensor.to(device, dtype=torch.float32).div_(255)
+    return tensor.contiguous(memory_format=torch.channels_last)
+
+
 @torch.inference_mode()
 def predict_triplets(model, frame_groups, device, use_amp: bool = True,
                      interpolation: int = cv2.INTER_AREA) -> list[np.ndarray]:
@@ -88,9 +95,7 @@ def predict_triplets(model, frame_groups, device, use_amp: bool = True,
     prepared = [_prepare_triplet(frames, interpolation) for frames in groups]
     images = [item[0] for item in prepared]
     pixels = images[0][None] if len(images) == 1 else np.stack(images, axis=0)
-    tensor = torch.from_numpy(pixels).permute(0, 3, 1, 2)
-    tensor = tensor.to(device, dtype=torch.float32).div_(255)
-    tensor = tensor.contiguous(memory_format=torch.channels_last)
+    tensor = _upload_pixels(pixels, device)
     amp = _amp_enabled(device, use_amp) and model not in _AMP_DISABLED_MODELS
     output = _forward_heatmaps(model, tensor, device, amp)
     if not np.isfinite(output).all():
@@ -108,3 +113,91 @@ def predict_heatmaps(model, frames, device, use_amp: bool = True,
     """Infer one to three frames, repeating the final input only for padding."""
     return predict_triplets(model, [frames], device, use_amp=use_amp,
                             interpolation=interpolation)[0]
+
+
+class EffB0CudaTriplet:
+    """Reuse image buffers and a CUDA graph for one desktop EffB0 triplet."""
+
+    _BGR_TO_RGB = [value for offset in (0, 3, 6) for value in
+                   (offset + 2, offset, offset + 1, offset + 1, offset, offset + 2)]
+
+    @classmethod
+    def create(cls, model, device, interpolation=cv2.INTER_AREA):
+        device = torch.device(device)
+        if not _amp_enabled(device, True) or model in _AMP_DISABLED_MODELS:
+            return None
+        try:
+            return cls(model, device, interpolation)
+        except RuntimeError as exc:
+            warnings.warn(f"EffB0 CUDA graph unavailable; using standard inference: {exc}", RuntimeWarning)
+            return None
+
+    def __init__(self, model, device, interpolation):
+        self._model = model
+        self._device = device
+        self._interpolation = interpolation
+        self._lock = Lock()
+        self._resized = [np.empty((HEIGHT, WIDTH, 3), dtype=np.uint8) for _ in range(3)]
+        self._packed = np.empty((HEIGHT, WIDTH, 9), dtype=np.uint8)
+
+        with torch.cuda.device(device), torch.inference_mode():
+            self._input = torch.zeros((1, 9, HEIGHT, WIDTH), device=device, dtype=torch.float32)
+            self._input = self._input.contiguous(memory_format=torch.channels_last)
+            self._graph = torch.cuda.CUDAGraph()
+            current_stream = torch.cuda.current_stream(device)
+            capture_stream = torch.cuda.Stream(device=device)
+            capture_stream.wait_stream(current_stream)
+            # Recreate autocast weights on the capture stream for each forward.
+            with torch.cuda.stream(capture_stream), torch.autocast("cuda", dtype=torch.float16, cache_enabled=False):
+                for _ in range(3):
+                    model(self._input)
+            current_stream.wait_stream(capture_stream)
+            torch.cuda.synchronize(device)
+            with torch.autocast("cuda", dtype=torch.float16, cache_enabled=False):
+                with torch.cuda.graph(self._graph, stream=capture_stream):
+                    self._output = model(self._input)
+            torch.cuda.synchronize(device)
+
+        self._executor = ThreadPoolExecutor(max_workers=3)
+
+    def _predict_triplet(self, frames):
+        jobs = [self._executor.submit(cv2.resize, frame, (WIDTH, HEIGHT), dst=output,
+                                      interpolation=self._interpolation)
+                for frame, output in zip(frames, self._resized)]
+        for job in jobs:
+            job.result()
+        cv2.mixChannels(self._resized, [self._packed], self._BGR_TO_RGB)
+        with torch.cuda.device(self._device):
+            self._input.copy_(_upload_pixels(self._packed[None], self._device))
+            self._graph.replay()
+            return self._output[0].float().cpu().numpy()
+
+    @torch.inference_mode()
+    def predict(self, frames):
+        frames = list(frames)
+        valid_triplet = len(frames) == 3 and all(
+            isinstance(frame, np.ndarray) and frame.dtype == np.uint8 and frame.ndim == 3
+            and frame.shape[2] == 3 and min(frame.shape[:2]) > 0 for frame in frames
+        )
+        if valid_triplet and _amp_enabled(self._device, True) and self._model not in _AMP_DISABLED_MODELS:
+            with self._lock:
+                if self._executor is not None:
+                    try:
+                        output = self._predict_triplet(frames)
+                    except (RuntimeError, cv2.error) as exc:
+                        warnings.warn(f"EffB0 CUDA graph failed; using standard inference: {exc}", RuntimeWarning)
+                    else:
+                        if np.isfinite(output).all():
+                            return output
+                        _warn_and_disable_amp(self._model)
+                    self._release()
+        return predict_heatmaps(self._model, frames, self._device, interpolation=self._interpolation)
+
+    def _release(self):
+        if self._executor is not None:
+            self._executor.shutdown(wait=True)
+            self._executor = self._graph = self._input = self._output = None
+
+    def close(self):
+        with self._lock:
+            self._release()

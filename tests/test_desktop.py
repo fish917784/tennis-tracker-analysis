@@ -46,6 +46,14 @@ class DesktopTests(unittest.TestCase):
         self.assertIsNone(self.run.H)
         self.assertFalse(self.run.court_calibrated)
 
+    def test_prefetched_initial_court_frame_is_only_probed_once(self):
+        with patch.object(desktop, '_COURT_READY', True), \
+             patch.object(desktop, 'detect_court', return_value=None) as detect:
+            self.run._probe_first_court(self.frame)
+            self.run._update_live_court(self.frame, 1, 30.)
+        detect.assert_called_once_with(self.frame, max_width=320)
+        self.run.court_worker.submit.assert_called_once_with(self.frame, 1)
+
     def test_nonconsecutive_bounce_window_is_rejected(self):
         self.run.catboost_model = Mock()
         self.run.ball_history.extend((f, 5., 10., True, 5., 10., 0.) for f in [1, 2, 3, 20, 21])

@@ -19,6 +19,7 @@ from importlib.util import module_from_spec, spec_from_file_location
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, SimpleQueue
 from threading import Thread, Event, Condition, Lock
@@ -44,6 +45,8 @@ if str(CODEX_COURT_DIR) not in sys.path:
 
 # 載入偵測器模組
 from live_detector import DEFAULT_MODEL, MODEL_DIR, WEIGHTS, Detector, ModelChoice, CameraCapture, WIDTH, HEIGHT
+
+from file_playback import FilePlayback
 
 try:
     import catboost as ctb
@@ -347,25 +350,42 @@ class BallContinuityTracker:
 
 
 # ── 即時追蹤與分析線程 ──────────────────────────────────────────
+@dataclass(frozen=True, slots=True)
+class FrameOverlay:
+    point: Optional[Tuple[int, int]]
+    court_quad: Optional[np.ndarray]
+    court_calibrated: bool
+    court_position: Optional[Tuple[float, float]]
+    inner_color: Optional[Tuple[int, int, int]]
+    outer_color: Optional[Tuple[int, int, int]]
+    trail: tuple
+    ripples: tuple
+    tracking_paused: bool
+    current_speed: float
+    max_speed: float
+    bounce_count: int
+    bounce_end: int
+
+
 class LiveTrackerRun(Thread):
-    def __init__(self, source, choice, realtime=False, fast_analysis=True, six_frame_batch=True):
+    def __init__(self, source, choice, realtime=False, fast_analysis=True):
         super().__init__(daemon=True)
         self.source = source
         self.choice = choice
+        self._active_detector = None
         self.requests = SimpleQueue()
         self.requests.put(choice)
         self.events = SimpleQueue()
         self.stop = Event()
         self.realtime = Event()
         self.fast_analysis = Event()
-        self.six_frame_batch = Event()
         if fast_analysis:
             self.fast_analysis.set()
-        if six_frame_batch:
-            self.six_frame_batch.set()
         if realtime:
             self.realtime.set()
         self.previews = deque(maxlen=60)
+        self.file_playback = None
+        self.analyzed_through = 0
         self.skipped_frames = 0
         self.source_fps = None
         self.camera = None
@@ -378,6 +398,7 @@ class LiveTrackerRun(Thread):
         self.show_fps = True
 
         self.current_fps = 0.0
+        self.final_analysis_fps = None
         self.last_inference_ms = 0.0
         self._fps_timestamps = deque(maxlen=30)
         self._analysis_frame_count = 0
@@ -402,6 +423,7 @@ class LiveTrackerRun(Thread):
         self._verified_court_result = None
         self._court_verified_frame = -1
         self._last_court_submit = 0
+        self._first_court_probe_done = False
         self._last_processed_frame = None
         self._court_thumbnail = None
         self._source_court = None
@@ -415,6 +437,7 @@ class LiveTrackerRun(Thread):
         self.ball_history = deque(maxlen=60)  # (frame_idx, x, y, vis, court_x, court_y, speed)
         self.ball_tracker = BallContinuityTracker()
         self.bounces = []
+        self._video_bounces = []
         self.active_ripples = []  # (frame_start, x, y, is_in, id, text)
         self.last_bounce_frame = -999
 
@@ -437,6 +460,10 @@ class LiveTrackerRun(Thread):
     @property
     def input_fps(self):
         return self.camera.fps if self.camera is not None else self.source_fps
+
+    @property
+    def analysis_fps(self):
+        return self.current_fps if self.final_analysis_fps is None else self.final_analysis_fps
 
     def _record_analysis_fps(self, frame_count, timestamp=None):
         self._analysis_frame_count += frame_count
@@ -692,6 +719,8 @@ class LiveTrackerRun(Thread):
                     "speed_type": "ground_projection_estimate",
                 }
                 self.bounces.append(event_dict)
+                if self.file_playback is not None:
+                    self._video_bounces.append(event_dict)
                 self.events.put(("bounce", event_dict))
                 # 加入動態波紋
                 self.active_ripples.append((frame_idx, int(round(x_curr)), int(round(y_curr)), is_in, bid))
@@ -705,6 +734,21 @@ class LiveTrackerRun(Thread):
             self.on_court_detected(None if getattr(det, "partial", False) else det, 0)
         except Exception:
             self.on_court_detected(None, 0)
+
+    def _probe_first_court(self, frame):
+        self._first_court_probe_done = True
+        if not _COURT_READY:
+            return
+        try:
+            det = detect_court(frame, max_width=320)
+            if (det is not None and not getattr(det, "partial", False) and det.score >= .94
+                    and self._verify_court_on_frame(frame, det.court_to_image)):
+                self._apply_court_result(det, 1)
+            elif self.court_worker is not None:
+                self.court_worker.submit(frame, 1)
+                self._last_court_submit = 1
+        except Exception:
+            self._apply_court_result(None, 1)
 
     def _update_live_court(self, frame, frame_idx, fps):
         # Verify the displayed pose at the tracking cadence. Waiting half a
@@ -759,17 +803,8 @@ class LiveTrackerRun(Thread):
         # 1. 球場標定與動態場地色票採樣
         check_interval = max(1, round(fps / 8))
         if frame_idx == 1:
-            if _COURT_READY:
-                try:
-                    det = detect_court(frame, max_width=320)
-                    if (det is not None and not getattr(det, "partial", False) and det.score >= .94
-                            and self._verify_court_on_frame(frame, det.court_to_image)):
-                        self._apply_court_result(det, frame_idx)
-                    elif self.court_worker is not None:
-                        self.court_worker.submit(frame, frame_idx)
-                        self._last_court_submit = frame_idx
-                except Exception:
-                    self._apply_court_result(None, frame_idx)
+            if not self._first_court_probe_done:
+                self._probe_first_court(frame)
         elif cut or frame_idx - self._last_court_submit >= check_interval:
             if self.court_worker is not None:
                 self.court_worker.submit(frame, frame_idx)
@@ -794,9 +829,8 @@ class LiveTrackerRun(Thread):
                 "verified_source": True,
             }))
 
-    def process_and_draw(self, frame: np.ndarray, heatmap: np.ndarray, frame_idx: int, fps: float) -> Tuple[np.ndarray, Optional[Tuple[int, int]]]:
-        canvas = frame.copy()
-        h, w = canvas.shape[:2]
+    def process_and_draw(self, frame: np.ndarray, heatmap: np.ndarray, frame_idx: int, fps: float):
+        h, w = frame.shape[:2]
         frame_step = 1 if self._last_processed_frame is None else max(1, frame_idx - self._last_processed_frame)
         if self._last_processed_frame is not None and frame_idx != self._last_processed_frame + 1:
             self._reset_ball_motion()
@@ -866,23 +900,50 @@ class LiveTrackerRun(Thread):
         # 4. CatBoost 即時落點判斷 (若沒偵測到場地將在內部直接 return)
         self.check_live_bounce(frame_idx, fps)
 
-        # ── 繪圖圖層 ──
         display_geometry = self._court_for_display(frame_idx, fps)
-        verifying = display_geometry is not None and not self.court_calibrated
+        self.active_ripples = [r for r in self.active_ripples if frame_idx - r[0] <= 35]
+        overlay = FrameOverlay(
+            point=pt,
+            court_quad=display_geometry["quad"] if display_geometry is not None else None,
+            court_calibrated=self.court_calibrated,
+            court_position=(cx_m, cy_m) if cx_m is not None and self.court_calibrated else None,
+            inner_color=self.court_inner_color,
+            outer_color=self.court_outer_color,
+            trail=tuple(self.ball_trail),
+            ripples=tuple(self.active_ripples),
+            tracking_paused=self.tracking_paused,
+            current_speed=self.current_speed_kmh,
+            max_speed=self.max_speed_kmh,
+            bounce_count=len(self.bounces),
+            bounce_end=len(self._video_bounces),
+        )
+        if self.file_playback is not None:
+            return overlay, pt
+        return self.draw_frame(frame, overlay, frame_idx, fps), pt
+
+    def draw_frame(self, frame, overlay: FrameOverlay, frame_idx, fps):
+        canvas = frame.copy()
+        h, w = canvas.shape[:2]
+        pt = overlay.point
+        verifying = overlay.court_quad is not None and not overlay.court_calibrated
+        if self.file_playback is None:
+            bounces = self.bounces
+        else:
+            bounces = self._video_bounces[overlay.bounce_end - overlay.bounce_count:overlay.bounce_end]
 
         # A. 球場標線 (ITF Court Overlay，僅在偵測到球場時繪製)
-        if self.show_court and display_geometry is not None:
-            poly = display_geometry["quad"].astype(np.int32)
+        if self.show_court and overlay.court_quad is not None:
+            poly = overlay.court_quad.astype(np.int32)
             cv2.polylines(canvas, [poly], True, (60, 190, 220) if verifying else (60, 240, 160), 2, cv2.LINE_AA)
-            for c_pt in display_geometry["quad"]:
+            for c_pt in overlay.court_quad:
                 cv2.circle(canvas, (int(round(c_pt[0])), int(round(c_pt[1]))), 5, (30, 160, 255), -1, cv2.LINE_AA)
             if verifying:
                 cv2.putText(canvas, "COURT: VERIFYING (LINE CALLS PAUSED)", (18, 76),
                             cv2.FONT_HERSHEY_SIMPLEX, .45, (60, 190, 220), 1, cv2.LINE_AA)
 
         # B. 球跡光暈 (Glowing Trail)
-        if self.show_trail and len(self.ball_trail) >= 2:
-            trail_list = list(self.ball_trail)
+        if self.show_trail and len(overlay.trail) >= 2:
+            trail_list = overlay.trail
             for j in range(1, len(trail_list)):
                 if math.hypot(trail_list[j][0] - trail_list[j-1][0], trail_list[j][1] - trail_list[j-1][1]) > max(75.0, w * 0.08):
                     continue
@@ -892,14 +953,13 @@ class LiveTrackerRun(Thread):
                 cv2.line(canvas, trail_list[j-1], trail_list[j], col, thick, cv2.LINE_AA)
 
         # C. 當前球心光圈
-        if visible and pt is not None:
+        if pt is not None:
             cv2.circle(canvas, pt, 8, (14, 18, 24), 3, cv2.LINE_AA)
             cv2.circle(canvas, pt, 7, (80, 243, 197), 2, cv2.LINE_AA)
             cv2.circle(canvas, pt, 2, (80, 243, 197), -1, cv2.LINE_AA)
 
         # D. 動態落點衝擊波 (Bounce Ripples)
-        self.active_ripples = [r for r in self.active_ripples if frame_idx - r[0] <= 35]
-        for f_start, bx, by, is_in, bid in self.active_ripples:
+        for f_start, bx, by, is_in, bid in overlay.ripples:
             age = frame_idx - f_start
             radius = int(8 + age * 1.2)
             alpha = max(0.0, 1.0 - (age / 35.0))
@@ -916,14 +976,13 @@ class LiveTrackerRun(Thread):
             mc_w, mc_h = max(8, round(110 * scale)), max(8, round(220 * scale))
             ox = max(0, w - mc_w - 14)
             oy = min(14, max(0, h - mc_h))
-            cur_pos = (cx_m, cy_m) if cx_m is not None and self.court_calibrated else None
             mini_court_img = render_mini_court(
                 110, 220,
-                current_m=cur_pos,
-                bounces=self.bounces if self.court_calibrated else [],
-                court_calibrated=self.court_calibrated or verifying,
-                inner_color=self.court_inner_color,
-                outer_color=self.court_outer_color
+                current_m=overlay.court_position,
+                bounces=bounces if overlay.court_calibrated else [],
+                court_calibrated=overlay.court_calibrated or verifying,
+                inner_color=overlay.inner_color,
+                outer_color=overlay.outer_color
             )
             if verifying:
                 cv2.putText(mini_court_img, "VERIFYING", (12, 110), cv2.FONT_HERSHEY_SIMPLEX, .38, (60, 190, 220), 1, cv2.LINE_AA)
@@ -936,7 +995,7 @@ class LiveTrackerRun(Thread):
             canvas[oy:oy+mc_h, ox:ox+mc_w] = mini_court_img
 
         # 狀態標示：若無球場超過 0.5 秒已暫停球追蹤
-        if self.tracking_paused:
+        if overlay.tracking_paused:
             cv2.putText(canvas, "BALL TRACKING: PAUSED (NO COURT > 0.5s)", (18, h - 22),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.50, (60, 70, 245), 2, cv2.LINE_AA)
 
@@ -948,21 +1007,21 @@ class LiveTrackerRun(Thread):
 
             # 速度欄
             if self.show_speed:
-                if self.tracking_paused:
+                if overlay.tracking_paused:
                     spd_text = "BALL: PAUSED [NO COURT]"
                     spd_col = (60, 70, 240)
-                elif self.court_calibrated and self.current_speed_kmh > 0:
-                    spd_text = f"PROJECTED: {self.current_speed_kmh:.0f} km/h"
+                elif overlay.court_calibrated and overlay.current_speed > 0:
+                    spd_text = f"PROJECTED: {overlay.current_speed:.0f} km/h"
                     spd_col = (80, 243, 197)
-                elif not self.court_calibrated:
+                elif not overlay.court_calibrated:
                     spd_text = "PROJECTED: [NO COURT]"
                     spd_col = (60, 70, 240)
                 else:
                     spd_text = "PROJECTED: -- km/h"
                     spd_col = (80, 243, 197)
                 cv2.putText(canvas, spd_text, (18, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.46, spd_col, 1, cv2.LINE_AA)
-                max_text = f"EST MAX: {self.max_speed_kmh:.0f} km/h"
-                bounce_text = f"BOUNCES: {len(self.bounces)}"
+                max_text = f"EST MAX: {overlay.max_speed:.0f} km/h"
+                bounce_text = f"BOUNCES: {overlay.bounce_count}"
                 cv2.putText(canvas, max_text, (230, 29), cv2.FONT_HERSHEY_SIMPLEX, 0.34, (200, 220, 240), 1, cv2.LINE_AA)
                 cv2.putText(canvas, bounce_text, (230, 47), cv2.FONT_HERSHEY_SIMPLEX, 0.34, (180, 200, 220), 1, cv2.LINE_AA)
 
@@ -979,10 +1038,10 @@ class LiveTrackerRun(Thread):
                     fps_text = "FPS: --"
                     fps_col = (180, 200, 220)
                 cv2.putText(canvas, fps_text, (348, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.39, fps_col, 1, cv2.LINE_AA)
-                analysis_text = f"ANALYSIS: {self.current_fps:.1f} FPS" if self.current_fps > 0 else "ANALYSIS: -- FPS"
+                analysis_text = f"ANALYSIS: {self.analysis_fps:.1f} FPS" if self.analysis_fps > 0 else "ANALYSIS: -- FPS"
                 cv2.putText(canvas, analysis_text, (348, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (160, 180, 200), 1, cv2.LINE_AA)
 
-        return canvas, pt
+        return canvas
 
     def update_model(self, detector, device):
         choice = None
@@ -1002,6 +1061,9 @@ class LiveTrackerRun(Thread):
                 raise
             self.events.put(("switch_error", f"切換失敗，繼續使用 {detector.choice.name}。\n\n{exc}"))
             return detector
+        self._active_detector = candidate
+        if detector is not None:
+            detector.close()
         self.events.put(("active", choice))
         return candidate
 
@@ -1044,12 +1106,13 @@ class LiveTrackerRun(Thread):
                 torch.set_num_threads(min(torch.get_num_threads(), 4))
                 hardware = "CPU"
             self.events.put(("device", hardware))
-            detector = self.update_model(None, device)
             if self.stop.is_set():
                 return
 
             if isinstance(self.source, int):
-                self.detect_camera(detector, device)
+                detector = self.update_model(None, device)
+                if not self.stop.is_set():
+                    self.detect_camera(detector, device)
                 return
 
             capture = cv2.VideoCapture(self.source)
@@ -1068,19 +1131,28 @@ class LiveTrackerRun(Thread):
                 self._source_court = source_court
             elif self.court_worker and CourtTracker is not None:
                 self.court_worker.tracker = CourtTracker(fps=self.source_fps)
+            prefetched = []
+            if self._source_court is None and _COURT_READY and not self.stop.is_set():
+                ok, first_frame = capture.read()
+                if not ok:
+                    self.events.put(("status", "影片播放完畢 ✓"))
+                    return
+                prefetched.append(first_frame)
+                # Start the court search while the ball model is still loading.
+                self._probe_first_court(first_frame)
+            if self.stop.is_set():
+                return
+            detector = self.update_model(None, device)
+            analysis_started = perf_counter()
             deadline = None
             previous_mode = self.fast_analysis.is_set()
-            batch_memory_ok = True
             index = 0
 
             while not self.stop.is_set():
                 detector = self.update_model(detector, device)
                 realtime = self.realtime.is_set()
-                use_six = (batch_memory_ok and self.six_frame_batch.is_set() and self.fast_analysis.is_set()
-                           and device.type == "cuda" and detector.choice.name == DEFAULT_MODEL)
-
-                frames = []
-                for _ in range(6 if use_six else 3):
+                frames, prefetched = prefetched, []
+                for _ in range(3 - len(frames)):
                     if self.stop.is_set():
                         return
                     ok, frame = capture.read()
@@ -1089,23 +1161,16 @@ class LiveTrackerRun(Thread):
                     frames.append(frame)
 
                 if not frames:
-                    self.events.put(("status", "影片播放完畢 ✓"))
+                    if self.file_playback is not None:
+                        elapsed = perf_counter() - analysis_started
+                        self.final_analysis_fps = index / elapsed if elapsed > 0 else 0.0
+                        self.events.put(("status", "背景分析完成 ✓"))
+                    else:
+                        self.events.put(("status", "影片播放完畢 ✓"))
                     break
 
                 started = perf_counter()
-                if len(frames) <= 3:
-                    heatmaps = detector.predict(frames, realtime=realtime)
-                else:
-                    groups = (frames[:3], frames[3:])
-                    try:
-                        heatmaps = np.concatenate(detector.predict_batch(groups), axis=0)
-                    except torch.cuda.OutOfMemoryError:
-                        batch_memory_ok = False
-                        self.events.put(("status", "顯示卡記憶體不足，本次分析已切回 3 幀批次"))
-                    if not batch_memory_ok:
-                        # Retry the already decoded frames after the failed
-                        # batch has unwound and released its GPU tensors.
-                        heatmaps = np.concatenate([detector.predict(group, realtime=realtime) for group in groups], axis=0)
+                heatmaps = detector.predict(frames, realtime=realtime)
                 ready = perf_counter()
                 inference_ms = (ready - started) * 1000
                 self.last_inference_ms = inference_ms
@@ -1129,14 +1194,21 @@ class LiveTrackerRun(Thread):
                     if self.stop.is_set():
                         return
                     index += 1
-                    drawn_frame, point = self.process_and_draw(frame, heatmap, index, self.source_fps)
-                    preview = (index, detector.choice.name, drawn_frame, point, milliseconds_per_triplet)
-                    self.previews.append((display_at, preview))
+                    result, point = self.process_and_draw(frame, heatmap, index, self.source_fps)
+                    if self.file_playback is not None:
+                        self.file_playback.publish(index, (detector.choice.name, result, milliseconds_per_triplet))
+                        self.analyzed_through = index
+                    else:
+                        preview = (index, detector.choice.name, result, point, milliseconds_per_triplet)
+                        self.previews.append((display_at, preview))
 
         except Exception as exc:
             self.last_error = str(exc)
             self.events.put(("error", str(exc)))
         finally:
+            detector, self._active_detector = self._active_detector, None
+            if detector is not None:
+                detector.close()
             if self.court_worker is not None:
                 self.court_worker.stop_event.set()
                 with self.court_worker.cv:
@@ -1156,7 +1228,10 @@ class TennisTrackerLiveApp:
         self.run: Optional[LiveTrackerRun] = None
         self.last_preview = None
         self.pending_preview = None
+        self.last_preview_fps = None
+        self.playback_finished = False
         self.image = None
+        self._preview_center = None
         self.closing = False
 
         self.choice = ModelChoice.preset(DEFAULT_MODEL)
@@ -1164,7 +1239,6 @@ class TennisTrackerLiveApp:
         self.camera_id = tk.StringVar(value="0")
         self.realtime = tk.BooleanVar(value=True)
         self.analysis_limit_var = tk.BooleanVar(value=False)
-        self.six_frame_batch_var = tk.BooleanVar(value=True)
 
         # 顯示開關
         self.show_trail_var = tk.BooleanVar(value=True)
@@ -1253,8 +1327,6 @@ class TennisTrackerLiveApp:
             row2, text="分析限速（來源 FPS）", variable=self.analysis_limit_var, command=self.update_toggles
         )
         self.analysis_limit_button.pack(side="left", padx=4)
-        ttk.Checkbutton(row2, text="EffB0 6 幀批次", variable=self.six_frame_batch_var,
-                        command=self.update_toggles).pack(side="left", padx=4)
         ttk.Checkbutton(row2, text="🎾 球跡光暈", variable=self.show_trail_var, command=self.update_toggles).pack(side="left", padx=4)
         ttk.Checkbutton(row2, text="📐 球場標線", variable=self.show_court_var, command=self.update_toggles).pack(side="left", padx=4)
         ttk.Checkbutton(row2, text="🗺️ 2D 小球場", variable=self.show_minicourt_var, command=self.update_toggles).pack(side="left", padx=4)
@@ -1306,7 +1378,7 @@ class TennisTrackerLiveApp:
         # 3. 即時落點列表 (Live Bounces Treeview)
         bounces_card = tk.Frame(sidebar, bg="#16202c", bd=1, relief="ridge", padx=10, pady=8)
         bounces_card.pack(fill="both", expand=True, pady=(0, 8))
-        tk.Label(bounces_card, text="🎾 即時落點記錄 (CatBoost ML Bounces)", bg="#16202c", fg="#8fa0b2", font=("Microsoft JhengHei UI", 9, "bold")).pack(anchor="w", pady=(0, 4))
+        tk.Label(bounces_card, text="🎾 背景分析落點記錄 (CatBoost ML Bounces)", bg="#16202c", fg="#8fa0b2", font=("Microsoft JhengHei UI", 9, "bold")).pack(anchor="w", pady=(0, 4))
 
         columns = ("id", "decision", "time", "coord", "speed", "conf")
         self.tree = ttk.Treeview(bounces_card, columns=columns, show="headings", height=12)
@@ -1347,13 +1419,8 @@ class TennisTrackerLiveApp:
     def update_toggles(self):
         if self.run:
             self.run.realtime.set() if self.realtime.get() else self.run.realtime.clear()
-            self.run.six_frame_batch.set() if self.six_frame_batch_var.get() else self.run.six_frame_batch.clear()
             fast_analysis = not self.analysis_limit_var.get()
-            if not isinstance(self.run.source, int) and self.run.fast_analysis.is_set() != fast_analysis:
-                self.run.previews.clear()
-                self.pending_preview = None
-                self.preview_times.clear()
-                self.next_fps_update = None
+            if not isinstance(self.run.source, int):
                 self.run.fast_analysis.set() if fast_analysis else self.run.fast_analysis.clear()
             self.run.show_trail = self.show_trail_var.get()
             self.run.show_court = self.show_court_var.get()
@@ -1386,11 +1453,19 @@ class TennisTrackerLiveApp:
         self.start(cam_idx)
 
     def start(self, source):
-        if self.run and self.run.is_alive():
+        if self.run is not None:
             self.stop()
+            return
+        try:
+            playback = None if isinstance(source, int) else FilePlayback(source)
+        except OSError as exc:
+            messagebox.showerror("預覽啟動失敗", str(exc), parent=self.root)
+            return
         self.tree.delete(*self.tree.get_children())
         self.last_preview = None
         self.pending_preview = None
+        self.last_preview_fps = None
+        self.playback_finished = False
         self.preview_times.clear()
         self.next_fps_update = None
         self.radar_speed.set("-- km/h")
@@ -1407,9 +1482,11 @@ class TennisTrackerLiveApp:
 
         self.analysis_limit_button.configure(state="disabled" if isinstance(source, int) else "normal")
         self.run = LiveTrackerRun(source, self.choice, realtime=self.realtime.get(),
-                                  fast_analysis=not self.analysis_limit_var.get(),
-                                  six_frame_batch=self.six_frame_batch_var.get())
+                                  fast_analysis=not self.analysis_limit_var.get())
+        self.run.file_playback = playback
         self.update_toggles()
+        if playback is not None:
+            playback.start()
         self.run.start()
 
     def set_running(self, running: bool):
@@ -1420,44 +1497,56 @@ class TennisTrackerLiveApp:
             self.analysis_limit_button.configure(state="normal")
 
     def stop(self):
-        if self.run and self.run.is_alive():
+        if self.run is not None:
             self.run.stop.set()
+            if self.run.file_playback is not None:
+                self.run.file_playback.stop()
             self.stop_button.configure(state="disabled")
             self.status.set("正在停止…")
 
     def close(self):
-        if self.run and self.run.is_alive():
+        if self.run is not None:
             self.closing = True
             self.stop()
         else:
             self.root.destroy()
 
+    def _read_preview(self, run, playback, now):
+        if playback is not None:
+            if run.source_fps is None or run.analyzed_through == 0:
+                return None
+            analysis_finished = not run.is_alive()
+            result = playback.take(
+                now, run.source_fps, run.analyzed_through, analysis_finished=analysis_finished,
+            )
+            if result is None:
+                return None
+            index, frame, record = result
+            if record is None:
+                return index, None, frame, None, None
+            model, overlay, inference_ms = record
+            return index, model, run.draw_frame(frame, overlay, index, run.source_fps), overlay.point, inference_ms
+
+        try:
+            if self.realtime.get() and len(run.previews) > 18:
+                while len(run.previews) > 6:
+                    run.previews.popleft()
+                self.pending_preview = None
+            if self.pending_preview is None and run.previews:
+                self.pending_preview = run.previews.popleft()
+            if self.pending_preview and self.pending_preview[0] <= now:
+                _, preview = self.pending_preview
+                self.pending_preview = None
+                return preview
+        except IndexError:
+            pass
+        return None
+
     def poll(self):
         run = self.run
+        playback = getattr(run, "file_playback", None)
         if run:
-            preview = None
-            now = perf_counter()
-            if not run.stop.is_set():
-                try:
-                    # 全速影片只顯示最新預覽，分析仍逐幀進行。
-                    is_camera = isinstance(run.source, int)
-                    if not is_camera and run.fast_analysis.is_set():
-                        while len(run.previews) > 1:
-                            run.previews.popleft()
-                        self.pending_preview = None
-                    if is_camera and self.realtime.get() and len(run.previews) > 18:
-                        while len(run.previews) > 6:
-                            run.previews.popleft()
-                        self.pending_preview = None
-
-                    if self.pending_preview is None and run.previews:
-                        self.pending_preview = run.previews.popleft()
-
-                    if self.pending_preview and self.pending_preview[0] <= now:
-                        _, preview = self.pending_preview
-                        self.pending_preview = None
-                except IndexError:
-                    pass
+            preview = None if run.stop.is_set() else self._read_preview(run, playback, perf_counter())
 
             if preview is not None and preview is not self.last_preview:
                 self.last_preview = preview
@@ -1475,15 +1564,18 @@ class TennisTrackerLiveApp:
                 if len(self.preview_times) >= 4:
                     dt = self.preview_times[-1] - self.preview_times[0]
                     if dt > 0.05:
-                        cur_fps = round((len(self.preview_times) - 1) / dt, 1)
-                        self.preview_fps.set(f"來源 FPS: {src_text} | 預覽: {cur_fps:.1f} | 分析: {run.current_fps:.1f}")
-                elif run.is_alive():
-                    self.preview_fps.set(f"來源 FPS: {src_text} | 預覽: 測量中 | 分析: {run.current_fps:.1f}")
+                        self.last_preview_fps = (len(self.preview_times) - 1) / dt
+                shown_fps = self.last_preview_fps
+                preview_text = f"{shown_fps:.1f}" if shown_fps is not None else "測量中"
+                self.preview_fps.set(
+                    f"來源 FPS: {src_text} | 預覽: {preview_text} | 分析: {run.analysis_fps:.1f}"
+                )
+                if hasattr(run, "current_speed_kmh"):
+                    speed = run.current_speed_kmh
+                    self.radar_speed.set(f"{speed:.0f} km/h" if speed > 0 else "-- km/h")
                 self.next_fps_update = now + 0.20
 
             # 處理事件佇列 (落點、球場、狀態)
-            if hasattr(run, "current_speed_kmh"):
-                self.radar_speed.set(f"{run.current_speed_kmh:.0f} km/h" if run.current_speed_kmh > 0 else "-- km/h")
             try:
                 while True:
                     kind, val = run.events.get_nowait()
@@ -1523,17 +1615,40 @@ class TennisTrackerLiveApp:
             except Empty:
                 pass
 
-            # 停止條件
-            if not run.is_alive() and (run.stop.is_set() or (self.pending_preview is None and not run.previews)):
+            analyzing = run.is_alive()
+            if playback is not None:
+                if run.last_error or (not analyzing and run.analyzed_through == 0):
+                    playback.stop()
+                preview_done = playback.finished
+                if preview_done and not self.playback_finished and analyzing and not run.stop.is_set():
+                    self.status.set("影片播放完成，背景分析中…" if playback.error is None else f"預覽失敗：{playback.error}")
+                self.playback_finished = preview_done
+            else:
+                preview_done = self.pending_preview is None and not run.previews
+
+            if not analyzing and (run.stop.is_set() or preview_done):
+                if playback is not None:
+                    playback.close()
+                else:
+                    self.preview_fps.set("預覽 FPS  —")
                 self.run = None
-                self.preview_fps.set("預覽 FPS  —")
                 if self.closing:
                     self.root.destroy()
                     return
                 self.set_running(False)
-                self.status.set(f"分析失敗：{run.last_error}" if run.last_error else "已停止")
+                if run.last_error:
+                    self.status.set(f"分析失敗：{run.last_error}")
+                elif playback is not None and playback.error:
+                    self.status.set(f"預覽失敗：{playback.error}")
+                elif playback is not None and not run.stop.is_set():
+                    self.status.set("影片播放與分析完成 ✓")
+                else:
+                    self.status.set("已停止")
 
-        self.root.after(8, self.poll)
+        delay_ms = 8
+        if self.run is not None and playback is not None and playback.next_at is not None:
+            delay_ms = max(1, min(delay_ms, math.ceil((playback.next_at - perf_counter()) * 1000)))
+        self.root.after(delay_ms, self.poll)
 
     def _add_bounce_row(self, b: Dict[str, Any]):
         tag = "in" if b["is_in"] else "out"
@@ -1573,12 +1688,18 @@ class TennisTrackerLiveApp:
             frame = cv2.resize(frame, size, interpolation=cv2.INTER_LINEAR)
 
         image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        if self.image is None:
+            self.canvas.itemconfigure(self.empty_item, state="hidden")
+        if center != self._preview_center:
+            self.canvas.coords(self.frame_item, *center)
+            self._preview_center = center
         self.image = ImageTk.PhotoImage(image)
-        self.canvas.itemconfigure(self.empty_item, state="hidden")
-        self.canvas.coords(self.frame_item, *center)
         self.canvas.itemconfigure(self.frame_item, state="normal", image=self.image)
-        loc_str = f"球位 ({point[0]}, {point[1]})" if point else "未見球體"
-        self.details.set(f"第 {index} 幀   |   {loc_str}   |   推論: {inference_ms:.1f} ms/3 幀")
+        if inference_ms is None:
+            self.details.set(f"第 {index} 幀   |   此幀尚未完成分析")
+        else:
+            loc_str = f"球位 ({point[0]}, {point[1]})" if point else "未見球體"
+            self.details.set(f"第 {index} 幀   |   {loc_str}   |   推論: {inference_ms:.1f} ms/3 幀")
 
 
 if __name__ == "__main__":

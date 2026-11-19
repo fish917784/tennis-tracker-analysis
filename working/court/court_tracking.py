@@ -1,6 +1,7 @@
 """Follow visible court markings through consecutive broadcast frames."""
 
 from collections import deque
+from functools import cache
 from math import isfinite
 from typing import Optional
 
@@ -8,11 +9,11 @@ import cv2
 import numpy as np
 
 if __package__:
-    from .court_detector import CourtDetection, _line_mask, detect_court, _detect_at_width
+    from .court_detector import CourtDetection, _line_mask, _detect_at_width, _detect_with_width_fallback
     from .court_geometry import COURT_CORNERS, COURT_SEGMENTS, sample_segments, score_templates, score_templates_multi
     from .court_partial import detect_partial_court, partial_scores, refine_partial_court
 else:
-    from court_detector import CourtDetection, _line_mask, detect_court, _detect_at_width
+    from court_detector import CourtDetection, _line_mask, _detect_at_width, _detect_with_width_fallback
     from court_geometry import COURT_CORNERS, COURT_SEGMENTS, sample_segments, score_templates, score_templates_multi
     from court_partial import detect_partial_court, partial_scores, refine_partial_court
 
@@ -338,7 +339,13 @@ class CourtTracker:
             result = self._confirm_cropped_court(frame.shape, gray, distance, scale)
             if result is not None or self._pending_candidate is not None:
                 return result
-        result = detect_court(frame, max_width=768)
+        # The weak-view check revisits some of the same widths on this frame.
+        # Reuse those fits, including misses, within this acquisition only.
+        @cache
+        def detect_at_width(width):
+            return _detect_at_width(frame, width)
+
+        result = _detect_with_width_fallback(frame, 768, detect_at_width)
         self._weak_scene = bool(result is not None and result.score >= .83 and result.validation_score >= .74)
         if result is not None and result.score >= 0.94:
             scores, close, pattern = self._line_scores(np.asarray([scale @ result.court_to_image]), distance)
@@ -347,7 +354,7 @@ class CourtTracker:
                 self._pending_candidate = None
                 self._pending_count = 0
                 return result
-        result = self._confirm_partial_court(frame, distance, scale)
+        result = self._confirm_partial_court(frame, distance, scale, detect_at_width)
         if result is not None or self._pending_candidate is not None:
             return result
         return self._confirm_cropped_court(frame.shape, gray, distance, scale)
@@ -375,7 +382,7 @@ class CourtTracker:
         self._pending_frame = self._frame_number
         return None
 
-    def _confirm_partial_court(self, frame, distance, scale):
+    def _confirm_partial_court(self, frame, distance, scale, detect_at_width=None):
         """Require independent scales and repeated frames for a weaker view.
 
         Court-level views can have corners outside the image. They must not
@@ -387,7 +394,8 @@ class CourtTracker:
         transverse = _long_transverse_lines(distance)
         # Direct detections avoid counting a 768->512 fallback as two scales.
         for resolution in dict.fromkeys(min(width, value) for value in (320, 512, 768)):
-            candidate = _detect_at_width(frame, resolution)
+            candidate = (_detect_at_width(frame, resolution) if detect_at_width is None
+                         else detect_at_width(resolution))
             if candidate is None or candidate.score < 0.83 or candidate.validation_score < 0.74:
                 continue
             aligned = _refine_matrix(scale @ candidate.court_to_image, distance, established=False)

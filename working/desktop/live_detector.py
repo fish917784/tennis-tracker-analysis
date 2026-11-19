@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 import torch
 
-from inference_runtime import predict_heatmaps, predict_triplets
+from inference_runtime import EffB0CudaTriplet, predict_heatmaps
 
 
 ROOT = Path(__file__).resolve().parent
@@ -58,6 +58,8 @@ class Detector:
         self.choice = choice
         self.model = model.eval().to(device, memory_format=torch.channels_last)
         self.warmup()
+        self._cuda_triplet = (EffB0CudaTriplet.create(self.model, self.device)
+                              if choice.name == DEFAULT_MODEL else None)
 
     @torch.inference_mode()
     def warmup(self):
@@ -70,10 +72,14 @@ class Detector:
     def predict(self, frames, realtime=False):
         # Playback pacing remains controlled by the caller. Inference precision
         # is shared by desktop and Web and can be forced to FP32 via the env.
+        if self._cuda_triplet is not None:
+            return self._cuda_triplet.predict(frames)
         return predict_heatmaps(self.model, frames, self.device)
 
-    def predict_batch(self, frame_groups):
-        return predict_triplets(self.model, frame_groups, self.device)
+    def close(self):
+        if self._cuda_triplet is not None:
+            self._cuda_triplet.close()
+            self._cuda_triplet = None
 
 
 def mark_ball(frame, heatmap):
