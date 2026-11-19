@@ -1,0 +1,12 @@
+-r requirements-court.txt
+torch>=2.6,<3
+torchvision>=0.21,<1
+timm>=1.0,<2
+pandas>=2.2,<4
+Pillow>=10,<14
+catboost>=1.2.8,<2
+scipy>=1.12,<2
+fastapi>=0.115.12,<1
+uvicorn>=0.33,<1
+Jinja2>=3.1.6,<4
+python-multipart>=0.0.20,<1

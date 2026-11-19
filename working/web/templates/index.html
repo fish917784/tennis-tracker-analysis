@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🏸 ETN-B0 Ball Tracker & 自動球場偵測落點分析</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0f1117;color:#e8e8e8;font-family:'Segoe UI',sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:40px 16px}
+
+  h1{font-size:2rem;font-weight:700;margin-bottom:4px;text-align:center}
+  h1 span.hl{color:#50f3c5}
+  h1 span.court-hl{color:#50c8f3}
+  h1 span.bounce-hl{color:#f5b041}
+  .subtitle{color:#888;font-size:.9rem;margin-bottom:36px;text-align:center}
+
+  /* 上傳區 */
+  .drop-zone{width:100%;max-width:760px;border:2px dashed #334;border-radius:16px;padding:44px;text-align:center;cursor:pointer;transition:.2s;background:#161b22}
+  .drop-zone:hover,.drop-zone.drag{border-color:#50f3c5;background:#0d2520}
+  .drop-zone svg{width:52px;height:52px;stroke:#50f3c5;margin-bottom:14px}
+  .drop-zone p{color:#aaa;font-size:.95rem}
+  .drop-zone p strong{color:#e8e8e8}
+  #fileInput{display:none}
+
+  /* 進度與狀態卡 */
+  .card{width:100%;max-width:760px;background:#161b22;border-radius:16px;padding:24px;margin-top:20px;display:none}
+  .card.show{display:block}
+  .info-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+  .filename{font-size:.95rem;color:#ccc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:70%}
+  .badge{font-size:.75rem;padding:3px 10px;border-radius:99px;font-weight:600}
+  .badge.processing{background:#1a3a4a;color:#50c8f3}
+  .badge.done{background:#1a3a1a;color:#50f3c5}
+  .badge.error{background:#3a1a1a;color:#f35050}
+  .progress-bar{background:#1e2530;border-radius:99px;height:8px;overflow:hidden}
+  .progress-fill{height:100%;background:linear-gradient(90deg,#50c8f3,#50f3c5);border-radius:99px;transition:width .4s ease;width:0%}
+  .pct{text-align:right;font-size:.8rem;color:#666;margin-top:6px}
+
+  /* 按鈕 */
+  .btn{display:block;width:100%;margin-top:16px;padding:12px;border:none;border-radius:10px;font-size:.95rem;font-weight:600;cursor:pointer;text-align:center;text-decoration:none;transition:.15s}
+  .btn-dl{background:#50f3c5;color:#0a1a14}
+  .btn-dl:hover{background:#3de0b0}
+  .btn-new{background:#1e2530;color:#ccc;margin-top:10px}
+  .btn-new:hover{background:#263040}
+  .btn:disabled{opacity:.55;cursor:wait}
+  .speed-info{font-size:.83rem;color:#8fa0b2;line-height:1.7;margin-top:12px}
+
+  /* 球場幾何校準卡片 */
+  #courtCard{width:100%;max-width:760px;background:#161b22;border-radius:16px;padding:20px 24px;margin-top:20px;display:none;border:1px solid #1a3a4a}
+  .court-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+  .court-title{font-size:1.05rem;font-weight:700;color:#50c8f3;display:flex;align-items:center;gap:8px}
+  .court-badge{background:#102c38;color:#50c8f3;padding:3px 10px;border-radius:99px;font-size:.8rem;font-weight:600}
+  .court-grid{display:grid;grid-template-columns:repeat(4, 1fr);gap:10px;margin-top:10px}
+  .court-corner-box{background:#1a232f;border-radius:8px;padding:10px;text-align:center;border:1px solid #233446}
+  .court-corner-lbl{font-size:.72rem;color:#8fa0b2;font-weight:600;margin-bottom:4px}
+  .court-corner-val{font-size:.84rem;color:#50f3c5;font-family:monospace}
+  .court-view-btn{background:#142d38;color:#50c8f3;border:1px solid #204b60;padding:6px 14px;border-radius:6px;font-size:.8rem;cursor:pointer;margin-top:14px;transition:.15s}
+  .court-view-btn:hover{background:#50c8f3;color:#081b24}
+  #courtImgContainer{margin-top:14px;display:none;border-radius:10px;overflow:hidden;border:1px solid #233446}
+  #courtImgContainer img{width:100%;display:block}
+
+  /* 影片預覽 */
+  #preview{width:100%;max-width:760px;margin-top:20px;border-radius:16px;overflow:hidden;display:none;background:#000}
+  #preview video{width:100%;display:block;border-radius:16px}
+
+  /* 落點分析報表卡片 */
+  #bounceCard{width:100%;max-width:760px;background:#161b22;border-radius:16px;padding:24px;margin-top:20px;display:none;border:1px solid #23303d}
+  .bounce-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;border-bottom:1px solid #222b35;padding-bottom:12px}
+  .bounce-title{font-size:1.1rem;font-weight:700;color:#f5b041;display:flex;align-items:center;gap:8px}
+  .bounce-count{background:#382710;color:#f5b041;padding:3px 10px;border-radius:99px;font-size:.8rem;font-weight:600}
+
+  .bounce-table{width:100%;border-collapse:collapse;font-size:.88rem}
+  .bounce-table th{background:#1a222c;color:#8fa0b2;text-align:left;padding:10px 12px;font-weight:600;border-bottom:1px solid #283544}
+  .bounce-table td{padding:10px 12px;border-bottom:1px solid #1f2732;color:#d2dbe5}
+  .bounce-table tr:hover td{background:#1b2430}
+  .jump-btn{background:#1f332a;color:#50f3c5;border:1px solid #265541;padding:4px 10px;border-radius:6px;font-size:.78rem;cursor:pointer;transition:.15s}
+  .jump-btn:hover{background:#50f3c5;color:#091b13}
+
+  .empty-bounce{color:#888;font-size:.9rem;text-align:center;padding:24px 0}
+
+  /* 模型資訊 */
+  .model-info{margin-top:36px;text-align:center;color:#555;font-size:.82rem;line-height:1.8}
+  .model-info span{color:#50f3c5}
+</style>
+</head>
+<body>
+
+<h1>🏸 <span class="hl">ETN-B0</span> <span class="court-hl">自動球場偵測</span> & <span class="bounce-hl">鷹眼落點分析</span></h1>
+<p class="subtitle">LSD 線段擬合幾何定位 &nbsp;·&nbsp; 單應性矩陣真實投影 (23.77m × 10.97m) &nbsp;·&nbsp; 垂直衝量反轉落點判定</p>
+
+<!-- 上傳區 -->
+<div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+  <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 12V4M8 8l4-4 4 4"/>
+  </svg>
+  <p><strong>點擊或拖曳上傳網球影片進行全自動分析</strong></p>
+  <p>系統自動：① 偵測球場雙打四角邊界 &nbsp;② ETN-B0 軌跡追蹤 &nbsp;③ 鷹眼落點座標與 IN/OUT 判定</p>
+</div>
+<input type="file" id="fileInput" accept=".mp4,.avi,.mov,.mkv">
+<div id="speedControls" style="width:100%;max-width:760px">
+  <div class="speed-info" id="speedInfo">分析速度：不限速</div>
+  <button type="button" class="btn btn-new" id="speedBtn" aria-pressed="false" onclick="toggleAnalysisSpeed()">限制分析為影片 FPS</button>
+  <div class="speed-info" id="speedNote">上傳前或分析期間皆可切換；輸出影片維持來源 FPS。</div>
+</div>
+
+<!-- 進度卡 -->
+<div class="card" id="progressCard">
+  <div class="info-row">
+    <span class="filename" id="fname">-</span>
+    <span class="badge processing" id="badge">球場偵測與追蹤中…</span>
+  </div>
+  <div class="progress-bar"><div class="progress-fill" id="fill"></div></div>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+    <div class="pct" id="pct" style="margin:0">0%</div>
+    <div id="timeElapsed" style="font-size:0.86rem;color:#50c8f3;font-family:monospace;font-weight:600">⏱️ 已耗時：0.0 秒</div>
+  </div>
+  <a class="btn btn-dl" id="dlBtn" style="display:none">⬇ 下載帶自動球場、軌跡與落點標記影片</a>
+  <button class="btn btn-new" id="newBtn" style="display:none" onclick="reset()">↩ 分析另一部影片</button>
+</div>
+
+<!-- 預覽影片 -->
+<div id="preview">
+  <video id="previewVid" controls></video>
+</div>
+
+<!-- 球場偵測幾何資訊卡片 -->
+<div id="courtCard">
+  <div class="court-header">
+    <div class="court-title">
+      <span>📐 球場幾何校準 (Court Calibration)</span>
+    </div>
+    <span class="court-badge" id="courtBadge">自動偵測成功 (Auto)</span>
+  </div>
+  <p style="font-size:0.84rem;color:#8fa0b2">已透過多幀 LSD 線段交點成功解出 4 個雙打外側角點，並建立單應性矩陣 (Homography)：</p>
+  <div class="court-grid" id="courtGrid">
+    <div class="court-corner-box">
+      <div class="court-corner-lbl">遠端底線左 (TL)</div>
+      <div class="court-corner-val" id="cTL">-</div>
+    </div>
+    <div class="court-corner-box">
+      <div class="court-corner-lbl">遠端底線右 (TR)</div>
+      <div class="court-corner-val" id="cTR">-</div>
+    </div>
+    <div class="court-corner-box">
+      <div class="court-corner-lbl">近端底線右 (BR)</div>
+      <div class="court-corner-val" id="cBR">-</div>
+    </div>
+    <div class="court-corner-box">
+      <div class="court-corner-lbl">近端底線左 (BL)</div>
+      <div class="court-corner-val" id="cBL">-</div>
+    </div>
+  </div>
+  <button class="court-view-btn" id="toggleCourtImgBtn" onclick="toggleCourtImg()">🔍 查看球場定位校準覆蓋圖</button>
+  <div id="courtImgContainer">
+    <img id="courtImgPreview" src="" alt="球場校準圖">
+  </div>
+</div>
+
+<!-- 落點分析數據報表 -->
+<div id="bounceCard">
+  <div class="bounce-header">
+    <div class="bounce-title">
+      <span>🎯 鷹眼落點分析結果 (Landing Points)</span>
+    </div>
+    <span class="bounce-count" id="bounceCountBadge">0 個落點</span>
+  </div>
+  <div id="bounceTableContainer">
+    <!-- 動態生成表格 -->
+  </div>
+</div>
+
+<div class="model-info">
+  核心模型：<span>EfficientNetV2B0_MSPE_DecoderCSCA_best_epoch89.pt</span><br>
+  純權重 <span>26.67 MiB</span> · 驗證 Accuracy <span>97.70%</span> · F1 <span>98.79%</span> · 容差 3px
+</div>
+
+<script>
+let jobId = null, pollTimer = null;
+let speedLimited = false, speedBusy = false, speedRevision = -1, jobPhase = null;
+let preferredSpeedLimited = false;
+
+const dropZone      = document.getElementById('dropZone');
+const card          = document.getElementById('progressCard');
+const fill          = document.getElementById('fill');
+const pctEl         = document.getElementById('pct');
+const badge         = document.getElementById('badge');
+const fnameEl       = document.getElementById('fname');
+const dlBtn         = document.getElementById('dlBtn');
+const newBtn        = document.getElementById('newBtn');
+const preview       = document.getElementById('preview');
+const previewVid    = document.getElementById('previewVid');
+const courtCard     = document.getElementById('courtCard');
+const courtBadge    = document.getElementById('courtBadge');
+const courtImgCont  = document.getElementById('courtImgContainer');
+const courtImg      = document.getElementById('courtImgPreview');
+const bounceCard    = document.getElementById('bounceCard');
+const bounceBadge   = document.getElementById('bounceCountBadge');
+const tableContainer= document.getElementById('bounceTableContainer');
+const speedControls = document.getElementById('speedControls');
+const speedBtn      = document.getElementById('speedBtn');
+const speedInfo     = document.getElementById('speedInfo');
+const speedNote     = document.getElementById('speedNote');
+
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag'); });
+dropZone.addEventListener('dragleave', ()=> dropZone.classList.remove('drag'));
+dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag'); handleFile(e.dataTransfer.files[0]); });
+document.getElementById('fileInput').addEventListener('change', e => handleFile(e.target.files[0]));
+
+function handleFile(file) {
+  if (!file) return;
+  reset();
+  fnameEl.textContent = file.name;
+  badge.textContent = '上傳中…'; badge.className = 'badge processing';
+  fill.style.width = '4%'; pctEl.textContent = '上傳中…';
+  card.classList.add('show'); dlBtn.style.display='none'; newBtn.style.display='none';
+  preview.style.display='none';
+  courtCard.style.display='none';
+  bounceCard.style.display='none';
+  courtImgCont.style.display='none';
+
+  const fd = new FormData();
+  const requestedLimit = preferredSpeedLimited;
+  fd.append('file', file);
+  fd.append('limit_to_source_fps', String(requestedLimit));
+  renderSpeedControl({status: 'processing', phase: 'uploading', limit_to_source_fps: requestedLimit});
+  fetch('/upload', { method:'POST', body: fd })
+    .then(readResponse)
+    .then(d => {
+      if (!d.job_id) throw new Error('伺服器未回傳工作編號');
+      jobId = d.job_id;
+      renderSpeedControl({status: 'processing', phase: 'analysis',
+        limit_to_source_fps: d.limit_to_source_fps === undefined ? requestedLimit : d.limit_to_source_fps});
+      pollStatus();
+    })
+    .catch(e => setError(e.message));
+}
+
+async function readResponse(response) {
+  let data;
+  try { data = await response.json(); }
+  catch (_) { throw new Error(`伺服器回應無法讀取 (HTTP ${response.status})`); }
+  if (!response.ok) {
+    const detail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail || data.message || '請求失敗');
+    throw new Error(`${detail} (HTTP ${response.status})`);
+  }
+  return data;
+}
+
+function renderSpeedControl(state) {
+  const revision = state.speed_revision === undefined ? -1 : state.speed_revision;
+  if (revision >= speedRevision && state.limit_to_source_fps !== undefined) {
+    speedLimited = !!state.limit_to_source_fps;
+    speedRevision = revision;
+  }
+  jobPhase = state.status === 'processing' ? state.phase : null;
+  speedControls.style.display = 'block';
+  const sourceFps = typeof state.source_fps === 'number' ? state.source_fps.toFixed(2) + ' FPS' : '—';
+  const actualFps = typeof state.analysis_fps === 'number' ? state.analysis_fps.toFixed(2) + ' FPS' : '—';
+  const mode = speedLimited ? '跟隨影片 FPS' : '不限速';
+  speedInfo.textContent = `來源影片：${sourceFps} ｜ 分析實際：${actualFps} ｜ 分析模式：${mode}`;
+  speedBtn.style.display = 'block';
+  speedBtn.disabled = speedBusy || jobPhase === 'uploading' || jobPhase === 'export';
+  speedBtn.setAttribute('aria-pressed', String(speedLimited));
+  speedBtn.textContent = speedLimited ? '取消分析限速' : '限制分析為影片 FPS';
+  speedNote.textContent = jobPhase === 'analysis'
+    ? '可在分析期間切換；實際為最近約一秒的分析 FPS，輸出影片維持來源 FPS。'
+    : (jobPhase === 'export' ? '模型分析已完成；落點計算與影片輸出保持不限速。'
+      : (jobPhase === 'uploading' ? '上傳中；將使用已選擇的分析速度。' : '上傳前可選擇速度；輸出影片維持來源 FPS。'));
+}
+
+async function toggleAnalysisSpeed() {
+  if (speedBusy || jobPhase === 'uploading' || jobPhase === 'export') return;
+  if (!jobId || jobPhase !== 'analysis') {
+    preferredSpeedLimited = !preferredSpeedLimited;
+    speedLimited = preferredSpeedLimited;
+    renderSpeedControl({status: 'idle'});
+    return;
+  }
+  const currentJob = jobId;
+  speedBusy = true;
+  speedBtn.disabled = true;
+  try {
+    const response = await fetch(`/speed/${currentJob}`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({limit_to_source_fps: !speedLimited}),
+    });
+    const state = await readResponse(response);
+    if (currentJob === jobId) {
+      preferredSpeedLimited = state.limit_to_source_fps;
+      renderSpeedControl(state);
+    }
+  } catch (error) {
+    if (currentJob === jobId) speedNote.textContent = '切換未完成：' + error.message;
+  } finally {
+    if (currentJob === jobId) {
+      speedBusy = false;
+      speedBtn.disabled = jobPhase === 'export' || jobPhase === 'uploading';
+    }
+  }
+}
+
+function pollStatus() {
+  clearInterval(pollTimer);
+  if (!jobId) { setError('缺少工作編號，請重新上傳'); return; }
+  const currentJob = jobId;
+  let inFlight = false;
+  pollTimer = setInterval(async () => {
+    if (inFlight || currentJob !== jobId) return;
+    inFlight = true;
+    try {
+      const r = await fetch(`/status/${currentJob}`);
+      const d = await readResponse(r);
+      if (currentJob !== jobId) return;
+      renderSpeedControl(d);
+      const p = d.progress || 0;
+      fill.style.width = p + '%';
+
+      const timeEl = document.getElementById('timeElapsed');
+      const elapsed = d.elapsed_sec !== undefined ? d.elapsed_sec : (d.duration_sec || 0);
+
+      let stageText = p < 5 ? ' (階段 0/2: 球場自動幾何偵測)' : (p < 50 ? ' (階段 1/2: 模型推論與軌跡萃取)' : ' (階段 2/2: 鷹眼落點計算與影片渲染)');
+      pctEl.textContent = p.toFixed(1) + '%' + (p < 100 ? stageText : '');
+
+      if (d.status === 'processing') {
+        timeEl.textContent = `⏱️ 已耗時：${elapsed.toFixed(1)} 秒`;
+      }
+
+      if (d.status === 'done') {
+        clearInterval(pollTimer);
+        const totalSec = d.duration_sec !== undefined ? d.duration_sec.toFixed(2) : elapsed.toFixed(2);
+        badge.textContent = `分析完成 ✓ (${totalSec}s)`;
+        badge.className = 'badge done';
+        fill.style.width = '100%';
+        pctEl.textContent = '100% (完成)';
+        timeEl.innerHTML = `⏱️ 總處理耗時：<strong style="color:#50f3c5">${totalSec} 秒</strong>`;
+
+        const url = `/download/${jobId}`;
+        dlBtn.href = url; dlBtn.style.display = 'block';
+        newBtn.style.display = 'block';
+        previewVid.src = url;
+        preview.style.display = 'block';
+
+        // 渲染球場幾何偵測資訊
+        renderCourt(d.court);
+
+        // 渲染落點分析數據
+        renderBounces(d.bounces || []);
+      } else if (d.status === 'error') {
+        clearInterval(pollTimer);
+        setError(d.message);
+      }
+    } catch(err) {
+      if (currentJob === jobId) setError(err.message);
+    } finally {
+      inFlight = false;
+    }
+  }, 1000);
+}
+
+function renderCourt(court) {
+  if (!court) return;
+  courtCard.style.display = 'block';
+  const isVerifiedSource = court.method === 'verified_source';
+  const isCodex = court.method === 'codex_model_match' || court.method === 'codex_tracked';
+  const isDl = court.method === 'deep_learning_14kps';
+  const isTopo = court.method === 'topological_consensus' || court.method === 'auto';
+  if (isVerifiedSource || isCodex) {
+    courtBadge.textContent = isVerifiedSource
+      ? '已使用這支原片先前核對的場地校正'
+      : '球場已驗證，切鏡後會重新標定';
+    courtBadge.style.color = '#50f3c5';
+    courtBadge.style.background = '#143823';
+  } else if (isDl) {
+    courtBadge.textContent = 'ResNet-50 深度學習 14 關鍵點 RANSAC (SOTA)';
+    courtBadge.style.color = '#50f3c5';
+    courtBadge.style.background = '#143823';
+  } else if (isTopo) {
+    courtBadge.textContent = 'ITF 多尺度頂帽幾何拓撲 (Topological)';
+    courtBadge.style.color = '#50c8f3';
+    courtBadge.style.background = '#102c38';
+  } else {
+    courtBadge.textContent = '未取得有效球場標定，暫停 IN / OUT 判定';
+    courtBadge.style.color = '#f5b041';
+    courtBadge.style.background = '#382710';
+  }
+
+  if (court.corners && court.corners.length === 4) {
+    document.getElementById('cTL').textContent = `(${court.corners[0][0]}, ${court.corners[0][1]})`;
+    document.getElementById('cTR').textContent = `(${court.corners[1][0]}, ${court.corners[1][1]})`;
+    document.getElementById('cBR').textContent = `(${court.corners[2][0]}, ${court.corners[2][1]})`;
+    document.getElementById('cBL').textContent = `(${court.corners[3][0]}, ${court.corners[3][1]})`;
+  }
+
+  if (court.has_image) {
+    courtImg.src = `/court_img/${jobId}?t=` + Date.now();
+  }
+}
+
+function toggleCourtImg() {
+  if (courtImgCont.style.display === 'block') {
+    courtImgCont.style.display = 'none';
+  } else {
+    courtImgCont.style.display = 'block';
+  }
+}
+
+function renderBounces(bounces) {
+  bounceCard.style.display = 'block';
+  bounceBadge.textContent = `偵測到 ${bounces.length} 個候選落點`;
+
+  if (bounces.length === 0) {
+    tableContainer.innerHTML = '<p class="empty-bounce">未偵測到可判定的落點；可能尚無有效球場標定、球不可見，或沒有符合條件的反彈。</p>';
+    return;
+  }
+
+  let html = `
+    <table class="bounce-table">
+      <thead>
+        <tr>
+          <th>序號</th>
+          <th>落點判定</th>
+          <th>時間戳記</th>
+          <th>影格</th>
+          <th>球場真實座標</th>
+          <th>CatBoost 信心度</th>
+          <th>影像像素</th>
+          <th>重播觀看</th>
+        </tr>
+      </thead>
+      <tbody>
+  `;
+
+  bounces.forEach(b => {
+    const badgeColor = b.is_in ? '#27ae60' : '#e74c3c';
+    const badgeBg = b.is_in ? '#143823' : '#3d1818';
+    const tag = b.is_in ? '✓ 界內 (IN)' : '✕ 界外 (OUT)';
+    const confStr = b.confidence !== undefined ? `<span style="color:#50f3c5;font-weight:600">${(b.confidence * 100).toFixed(1)}%</span>` : '-';
+    html += `
+      <tr>
+        <td><strong style="color:#f5b041">#${b.id}</strong></td>
+        <td><span style="background:${badgeBg};color:${badgeColor};padding:3px 8px;border-radius:4px;font-weight:700;font-size:0.78rem">${tag}</span></td>
+        <td>${b.timestamp}</td>
+        <td>第 ${b.frame} 幀</td>
+        <td><code>X: ${b.court_x}m, Y: ${b.court_y}m</code></td>
+        <td>${confStr}</td>
+        <td style="color:#8fa0b2">(${b.x}, ${b.y})</td>
+        <td><button class="jump-btn" onclick="jumpTo(${b.time_sec})">▶ 慢動作跳放</button></td>
+      </tr>
+    `;
+  });
+
+  html += `</tbody></table>`;
+  tableContainer.innerHTML = html;
+}
+
+function jumpTo(sec) {
+  if (previewVid) {
+    previewVid.currentTime = Math.max(0, sec - 0.5);
+    previewVid.play();
+  }
+}
+
+function setError(msg) {
+  clearInterval(pollTimer);
+  jobPhase = null;
+  speedBtn.disabled = false;
+  badge.textContent = '錯誤'; badge.className = 'badge error';
+  pctEl.textContent = msg;
+  newBtn.style.display = 'block';
+}
+
+function reset() {
+  clearInterval(pollTimer);
+  jobId = null;
+  speedLimited = preferredSpeedLimited; speedBusy = false; speedRevision = -1; jobPhase = null;
+  renderSpeedControl({status: 'idle'});
+  card.classList.remove('show');
+  preview.style.display = 'none';
+  courtCard.style.display = 'none';
+  bounceCard.style.display = 'none';
+  fill.style.width = '0%';
+  const timeEl = document.getElementById('timeElapsed');
+  if (timeEl) timeEl.textContent = '⏱️ 已耗時：0.0 秒';
+  document.getElementById('fileInput').value = '';
+}
+renderSpeedControl({status: 'idle'});
+</script>
+</body>
+</html>
