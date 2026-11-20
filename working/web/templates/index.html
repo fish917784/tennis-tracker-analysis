@@ -72,7 +72,8 @@
   .bounce-table th{background:#1a222c;color:#8fa0b2;text-align:left;padding:10px 12px;font-weight:600;border-bottom:1px solid #283544}
   .bounce-table td{padding:10px 12px;border-bottom:1px solid #1f2732;color:#d2dbe5}
   .bounce-table tr:hover td{background:#1b2430}
-  .jump-btn{background:#1f332a;color:#50f3c5;border:1px solid #265541;padding:4px 10px;border-radius:6px;font-size:.78rem;cursor:pointer;transition:.15s}
+  .jump-actions{display:grid;gap:5px}
+  .jump-btn{white-space:nowrap;background:#1f332a;color:#50f3c5;border:1px solid #265541;padding:4px 10px;border-radius:6px;font-size:.78rem;cursor:pointer;transition:.15s}
   .jump-btn:hover{background:#50f3c5;color:#091b13}
 
   .empty-bounce{color:#888;font-size:.9rem;text-align:center;padding:24px 0}
@@ -443,7 +444,12 @@ function renderBounces(bounces) {
         <td><code>X: ${b.court_x}m, Y: ${b.court_y}m</code></td>
         <td>${confStr}</td>
         <td style="color:#8fa0b2">(${b.x}, ${b.y})</td>
-        <td><button class="jump-btn" onclick="jumpTo(${b.time_sec})">▶ 慢動作跳放</button></td>
+        <td>
+          <div class="jump-actions">
+            <button type="button" class="jump-btn" onclick="jumpTo(${b.time_sec})">▶ 重播</button>
+            <button type="button" class="jump-btn" onclick="jumpTo(${b.time_sec}, 0.5)">0.5× 慢放</button>
+          </div>
+        </td>
       </tr>
     `;
   });
@@ -452,9 +458,10 @@ function renderBounces(bounces) {
   tableContainer.innerHTML = html;
 }
 
-function jumpTo(sec) {
+function jumpTo(sec, playbackRate = 1) {
   if (previewVid) {
-    previewVid.currentTime = Math.max(0, sec - 0.5);
+    previewVid.currentTime = Math.max(0, sec - 1);
+    previewVid.playbackRate = playbackRate;
     previewVid.play();
   }
 }

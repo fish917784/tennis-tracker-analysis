@@ -130,5 +130,16 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
   await vm.runInContext('toggleAnalysisSpeed()', preference.context);
   assert.equal(preference.elements.get('speedBtn').attributes['aria-pressed'], 'false');
 
-  console.log('7 frontend checks passed (4 error paths, live speed toggle/export, failed switch, pre-upload preference).');
+  const replay = createContext([]);
+  vm.runInContext("renderBounces([{id: 2, frame: 72, timestamp: '00:02.88', time_sec: 2.88}])", replay.context);
+  const bounceTable = replay.elements.get('bounceTableContainer').innerHTML;
+  assert.match(bounceTable, /onclick="jumpTo\(2\.88\)">▶ 重播/);
+  assert.match(bounceTable, /onclick="jumpTo\(2\.88, 0\.5\)">0\.5× 慢放/);
+  const replayVideo = replay.elements.get('previewVid');
+  const playbacks = [];
+  replayVideo.play = () => playbacks.push([replayVideo.currentTime, replayVideo.playbackRate]);
+  vm.runInContext('jumpTo(2.88, 0.5); jumpTo(2.88); jumpTo(0.4, 0.5);', replay.context);
+  assert.deepEqual(playbacks, [[1.88, 0.5], [1.88, 1], [0, 0.5]]);
+
+  console.log('8 frontend checks passed (4 error paths, live speed toggle/export, failed switch, pre-upload preference, bounce replay).');
 })().catch(error => { console.error(error); process.exitCode = 1; });
