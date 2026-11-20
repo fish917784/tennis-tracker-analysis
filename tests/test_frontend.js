@@ -141,5 +141,17 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
   vm.runInContext('jumpTo(2.88, 0.5); jumpTo(2.88); jumpTo(0.4, 0.5);', replay.context);
   assert.deepEqual(playbacks, [[1.88, 0.5], [1.88, 1], [0, 0.5]]);
 
-  console.log('8 frontend checks passed (4 error paths, live speed toggle/export, failed switch, pre-upload preference, bounce replay).');
+  const scoring = createContext([]);
+  vm.runInContext(`renderBounces([
+    {id: 1, frame: 41, timestamp: '00:01.64', time_sec: 1.64, confidence: 1.135},
+    {id: 2, frame: 72, timestamp: '00:02.88', time_sec: 2.88, confidence: 0.705},
+    {id: 3, frame: 110, timestamp: '00:04.40', time_sec: 4.4}
+  ])`, scoring.context);
+  const scoredTable = scoring.elements.get('bounceTableContainer').innerHTML;
+  assert.match(scoredTable, /<th>落點分數<\/th>/);
+  assert.match(scoredTable, />1\.135<\/span>/);
+  assert.match(scoredTable, />0\.705<\/span>/);
+  assert.match(scoredTable, /<td>-<\/td>/);
+
+  console.log('9 frontend checks passed (4 error paths, live speed toggle/export, failed switch, pre-upload preference, bounce replay, raw bounce scores).');
 })().catch(error => { console.error(error); process.exitCode = 1; });

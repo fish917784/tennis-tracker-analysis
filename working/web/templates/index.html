@@ -86,7 +86,7 @@
 <body>
 
 <h1>🏸 <span class="hl">ETN-B0</span> <span class="court-hl">自動球場偵測</span> & <span class="bounce-hl">鷹眼落點分析</span></h1>
-<p class="subtitle">LSD 線段擬合幾何定位 &nbsp;·&nbsp; 單應性矩陣真實投影 (23.77m × 10.97m) &nbsp;·&nbsp; 垂直衝量反轉落點判定</p>
+<p class="subtitle">霍夫場線偵測 &nbsp;·&nbsp; 球場平面投影（23.77 m × 10.97 m） &nbsp;·&nbsp; 候選落點分析</p>
 
 <!-- 上傳區 -->
 <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
@@ -131,7 +131,7 @@
     </div>
     <span class="court-badge" id="courtBadge">自動偵測成功 (Auto)</span>
   </div>
-  <p style="font-size:0.84rem;color:#8fa0b2">已透過多幀 LSD 線段交點成功解出 4 個雙打外側角點，並建立單應性矩陣 (Homography)：</p>
+  <p style="font-size:0.84rem;color:#8fa0b2">霍夫場線偵測搭配標準球場模板進行校正。雙打外框角點以影像像素表示。</p>
   <div class="court-grid" id="courtGrid">
     <div class="court-corner-box">
       <div class="court-corner-lbl">遠端底線左 (TL)</div>
@@ -422,7 +422,7 @@ function renderBounces(bounces) {
           <th>時間戳記</th>
           <th>影格</th>
           <th>球場真實座標</th>
-          <th>CatBoost 信心度</th>
+          <th>落點分數</th>
           <th>影像像素</th>
           <th>重播觀看</th>
         </tr>
@@ -434,7 +434,9 @@ function renderBounces(bounces) {
     const badgeColor = b.is_in ? '#27ae60' : '#e74c3c';
     const badgeBg = b.is_in ? '#143823' : '#3d1818';
     const tag = b.is_in ? '✓ 界內 (IN)' : '✕ 界外 (OUT)';
-    const confStr = b.confidence !== undefined ? `<span style="color:#50f3c5;font-weight:600">${(b.confidence * 100).toFixed(1)}%</span>` : '-';
+    const scoreText = Number.isFinite(b.confidence)
+      ? `<span style="color:#50f3c5;font-weight:600">${b.confidence.toFixed(3)}</span>`
+      : '-';
     html += `
       <tr>
         <td><strong style="color:#f5b041">#${b.id}</strong></td>
@@ -442,7 +444,7 @@ function renderBounces(bounces) {
         <td>${b.timestamp}</td>
         <td>第 ${b.frame} 幀</td>
         <td><code>X: ${b.court_x}m, Y: ${b.court_y}m</code></td>
-        <td>${confStr}</td>
+        <td>${scoreText}</td>
         <td style="color:#8fa0b2">(${b.x}, ${b.y})</td>
         <td>
           <div class="jump-actions">

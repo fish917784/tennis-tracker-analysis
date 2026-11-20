@@ -85,7 +85,7 @@ EffB0 是專案的預設球追蹤模型。它採用 EfficientNetV2-B0 作為特�
 
 ### Web 介面
 
-Web 版分析完成後，可在同一頁預覽與下載帶標記的影片。候選落點表會顯示時間、球場座標、界內外估計與模型評分。
+Web 版分析完成後，可在同一頁預覽與下載帶標記的影片。候選落點表會顯示時間、球場座標、界內外估計和落點分數。分數以原始數值顯示，例如 `1.135`。
 
 #### 落點重播與慢放
 
@@ -112,7 +112,7 @@ Web 版分析完成後，可在同一頁預覽與下載帶標記的影片。候�
 
 **Web 落點表**
 
-![Web 候選落點表，包含界內外估計、時間、座標與重播及慢放按鈕](docs/images/web-bounces.png)
+![Web 候選落點表，包含時間、座標、界內外估計、落點分數及播放按鈕](docs/images/web-bounces.png)
 
 ## 實測比較
 
@@ -132,21 +132,19 @@ EffB0 和 V2 以目前的預覽同步模式實測，V5 採用本機完整版先�
 
 ## 安裝與啟動
 
-建議在 Windows 使用含 Tkinter 的 Python 3.12。影片匯出建議將支援 H.264 的 FFmpeg 放入 `PATH`。
+建議使用 Windows 和含 Tkinter 的 Python 3.12。影片匯出建議將支援 H.264 的 FFmpeg 放入 `PATH`。
 
-```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
+1. **安裝依賴**。在專案資料夾開啟 PowerShell 並執行下列指令。
 
-使用 NVIDIA GPU 時，可先為同一虛擬環境選擇適合的 `torch`、`torchvision`，再安裝上方其餘依賴。[PyTorch 安裝選擇器](https://pytorch.org/get-started/locally/)
+   ```powershell
+   py -3.12 -m venv .venv
+   .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+   ```
 
-桌面版預設使用 EffB0，也可切換 TrackNetV2。Web 版使用 EffB0。球追蹤權重由本機提供，CatBoost 落點權重可選用。[球追蹤權重](working/desktop/model/README.md) · [落點權重](working/models/README.md)
+   使用 NVIDIA GPU 時，可先替同一個虛擬環境安裝適用的 `torch` 與 `torchvision`，再安裝其餘依賴。[PyTorch 安裝選擇器](https://pytorch.org/get-started/locally/)
 
-| 啟動方式 | 用途 |
-| --- | --- |
-| `START_DESKTOP.cmd` | 開啟桌面版，選擇影片或攝影機 |
-| `START_WEB.cmd` | 啟動 Web 服務並在瀏覽器開啟 `http://127.0.0.1:8018` |
+2. **放入模型權重**。將你已有的 EffB0 `.pt` 權重放入 `working/desktop/model/`。EffB0 是桌面版的預設模型，也是 Web 版使用的模型。桌面版也可放入 TrackNetV2 以切換模型。CatBoost 落點權重可選用。[球追蹤權重檔名](working/desktop/model/README.md) · [落點權重](working/models/README.md)
+3. **開啟程式**。雙擊 `START_DESKTOP.cmd` 開啟桌面版，或雙擊 `START_WEB.cmd` 啟動 Web 並開啟 `http://127.0.0.1:8018`。
 
 啟動檔使用專案的 `.venv`。Web 可透過 `python start_web.py --port 8018` 指定埠號，分析結果存於 `working/web/outputs/`。
 
@@ -169,7 +167,7 @@ py -3.12 -m venv .venv
 
 ## 重現與驗證
 
-發布包已通過 131 項 Python 測試及 8 項前端檢查。EffB0 和 TrackNetV2 均以實際權重測試 CUDA 推論。另抽查同段影片的 72 幀，EffB0 以 CUDA Graph 和標準 AMP 推論所得的熱力圖逐值一致。
+發布包已通過 131 項 Python 測試及 9 項前端檢查。EffB0 和 TrackNetV2 均以實際權重測試 CUDA 推論。另抽查同段影片的 72 幀，EffB0 以 CUDA Graph 和標準 AMP 推論所得的熱力圖逐值一致。
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
