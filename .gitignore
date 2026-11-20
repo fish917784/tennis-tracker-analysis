@@ -55,6 +55,7 @@ Thumbs.db
 !/docs/images/desktop-tracknetv5.png
 !/docs/images/web-analysis.png
 !/docs/images/web-bounces.png
+!/docs/images/web-bounce-replay.png
 *.npy
 *.npz
 *.zip
