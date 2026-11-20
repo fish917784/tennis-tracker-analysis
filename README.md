@@ -63,17 +63,9 @@ EffB0 是專案的預設球追蹤模型。它採用 EfficientNetV2-B0 作為特�
 
 ### 桌面介面
 
-桌面畫面同時顯示場地投影、球跡、2D 小球場與背景分析落點表。頂端會分開顯示來源、預覽及分析 FPS。
+桌面版同時顯示場地投影、球跡、2D 小球場和候選落點表。
 
-![EffB0 桌面實測畫面，包含場地投影、球跡、FPS 和落點紀錄](docs/images/desktop-analysis.png)
-
-**TrackNetV2**
-
-![TrackNetV2 桌面實測畫面](docs/images/desktop-tracknetv2.png)
-
-**TrackNetV5 SDK（本機完整版）**
-
-![TrackNetV5 SDK 本機完整版實測畫面](docs/images/desktop-tracknetv5.png)
+![三款模型的桌面實測畫面，放大來源、預覽和分析 FPS 以及候選落點數](docs/images/desktop-models-comparison.png)
 
 ### Web 介面
 
