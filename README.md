@@ -63,6 +63,14 @@ EffB0 是專案的預設球追蹤模型。它採用 EfficientNetV2-B0 作為特�
 
 三段各 90 幀的斜拍測試中，程式都在第 7 幀找到球場，成功校正的影格都從 0 增至 84。[不同視角的實測紀錄](docs/benchmarks/court-angles.json)
 
+#### Alcaraz／Ruud 練習影片
+
+同一支 720p、59.94 FPS 低視角影片的三個時點。近端底線仍在畫面中，超出畫面的邊線和角點則以橘色虛線與橘點標出。
+
+| 片頭 00:03.70 | 對打 00:44.99 | 後段 08:40.00 |
+| --- | --- | --- |
+| [![片頭場地校正](docs/images/court-practice-opening.jpg)](docs/images/court-practice-opening.jpg) | [![對打中場地校正](docs/images/court-practice-rally.jpg)](docs/images/court-practice-rally.jpg) | [![後段場地校正](docs/images/court-practice-late.jpg)](docs/images/court-practice-late.jpg) |
+
 ### 落點前後的球體運動
 
 從 `test4.mp4` 擷取 14 個連續影格，每排 7 幀。黃色 EVENT 標出候選落點，前後影格可看出球的下降與反彈。
