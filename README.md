@@ -61,14 +61,13 @@ EffB0 是專案的預設球追蹤模型。它採用 EfficientNetV2-B0 作為特�
 
 ![EffB0 桌面實測畫面，包含場地投影、球跡、FPS 和落點紀錄](docs/images/desktop-analysis.png)
 
-<details>
-<summary>查看 TrackNetV2 與 TrackNetV5 SDK 的桌面截圖</summary>
+**TrackNetV2**
 
 ![TrackNetV2 桌面實測畫面](docs/images/desktop-tracknetv2.png)
 
-![TrackNetV5 SDK 本機完整版實測畫面](docs/images/desktop-tracknetv5.png)
+**TrackNetV5 SDK（本機完整版）**
 
-</details>
+![TrackNetV5 SDK 本機完整版實測畫面](docs/images/desktop-tracknetv5.png)
 
 ### Web 介面
 
@@ -93,14 +92,13 @@ Web 版分析完成後，可在同一頁預覽與下載帶標記的影片。候�
 
 ![Web 影片播放器、場地校正資訊與第 2 筆候選落點的重播與慢放按鈕](docs/images/web-bounce-replay.png)
 
-<details>
-<summary>查看分析完成與落點表截圖</summary>
+**Web 分析完成**
 
 ![Web 分析完成後的影片預覽、下載按鈕與場地資訊](docs/images/web-analysis.png)
 
-![Web 候選落點表，包含界內外估計、時間、座標與重播及慢放按鈕](docs/images/web-bounces.png)
+**Web 落點表**
 
-</details>
+![Web 候選落點表，包含界內外估計、時間、座標與重播及慢放按鈕](docs/images/web-bounces.png)
 
 ## 實測比較
 
