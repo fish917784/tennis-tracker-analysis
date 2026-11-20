@@ -59,7 +59,7 @@ EffB0 是專案的預設球追蹤模型。它採用 EfficientNetV2-B0 作為特�
 
 **斜拍 `test7.mp4`（`00:00.20`）**。程式擴大搜尋角度，找出向右下傾斜的底線和接近垂直的邊線，再用發球線驗證投影。
 
-<a href="docs/images/court-oblique.jpg"><img src="docs/images/court-oblique.jpg" width="560" alt="斜拍室內場地的自動校正結果，投影線沿可見的底線、邊線及發球線"></a>
+<a href="docs/images/court-oblique.jpg"><img src="docs/images/court-oblique.jpg" width="700" alt="斜拍室內場地的自動校正結果，投影線沿可見的底線、邊線及發球線"></a>
 
 三段各 90 幀的斜拍測試中，程式都在第 7 幀找到球場，成功校正的影格都從 0 增至 84。[不同視角的實測紀錄](docs/benchmarks/court-angles.json)
 
